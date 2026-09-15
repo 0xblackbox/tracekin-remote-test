@@ -13,7 +13,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from tracekin import InputError, SCHEMA, Store, home_dir, send_https
+from tracekin import InputError, PLUGIN_VERSION, SCHEMA, Store, home_dir, send_https
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
@@ -178,7 +178,7 @@ def main():
     runtime = app.store.home / "runtime.json"
     fd = os.open(runtime, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        json.dump({"pid": os.getpid(), "url": url, "mode": "demo" if args.demo else "production"}, f)
+        json.dump({"pid": os.getpid(), "url": url, "mode": "demo" if args.demo else "production", "version": PLUGIN_VERSION}, f)
     print(json.dumps({"url": url, "mode": "demo" if args.demo else "production", "sharing_enabled": app.store.enabled()}, ensure_ascii=False), flush=True)
     try:
         server.serve_forever()

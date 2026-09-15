@@ -1,6 +1,6 @@
 # Tracekin Codex client MVP
 
-Tracekin is a **local-first Codex plugin**, not a Chrome content detector. It keeps a custom animated pet in Codex and adds a separate loopback panel where the user chooses a concrete project and whether to share narrowly redacted activity metadata.
+Tracekin is a **local-first Codex plugin**, not a Chrome content detector. It keeps the selected animated pet in Codex and adds one-time local sharing authorization, a delivery dashboard, and deterministic controls that pause only the current session.
 
 ## Run from this checkout
 
@@ -9,7 +9,7 @@ cd /Users/bing/Projects/brainstrom/tracekin
 python3 scripts/serve.py --demo --home /tmp/tracekin-demo --project /Users/bing/Projects/brainstrom
 ```
 
-Open the printed loopback URL. The demo receiver is disposable and local-only. For production testing omit `--demo`, set an HTTPS ingestion URL in the panel, and review/trust the bundled hooks with `/hooks` before enabling them. A new or changed project, endpoint, or token always resets the sharing checkbox.
+Open the printed loopback URL. The demo receiver is disposable and local-only. For production testing omit `--demo`, set an HTTPS ingestion URL in the panel, and review/trust the bundled hooks before enabling them. A new or changed project, endpoint, or token revokes the previous authorization.
 
 ## Native pet
 
@@ -17,18 +17,32 @@ The panel defaults to **沿用当前 Codex 宠物**: turn on that switch to keep
 
 ## MCP + Hooks 架构
 
-Tracekin 可以作为 Codex 插件直接安装，并内置一个只读 MCP 服务（查询状态和数据契约）。MCP 负责让 Codex 认识 Tracekin；真正的无感采集由生命周期 Hooks 完成，因为 MCP 工具只有在模型主动调用时才会运行。两者一起安装，用户只在客户端面板点击一次全量共享开关。
+Tracekin 可以作为 Codex 插件直接安装，并内置一个只读 MCP 服务（查询状态、暂停会话数量和数据契约）。MCP 负责让 Codex 认识 Tracekin；真正的采集及 `tracekin off/on/status` 控制由生命周期 Hooks 完成，因此不依赖模型是否主动调用工具。
 
 ## 无感体验
 
-首次打开面板只出现一次「允许此项目 · 后台运行」或「仅本地」。选择后不再填写日报、不再生成候选样本；宠物照常跟随 Codex，Hook 在后台处理允许项目的活动元数据。项目或接收地址变化时才重新请求授权。
+首次打开正式面板只出现一次「同意并开始共享」或「暂不共享」。同意后，新会话默认共享。敏感任务开始前把 `tracekin off` 作为该会话第一条消息；该命令本身不会上传，且只暂停当前会话。使用 `tracekin on` 恢复，使用 `tracekin status` 查询。项目或接收地址变化时才重新请求授权。
 
 ## What this MVP proves
 
-- default-off, project-scoped consent inside a Codex-side companion;
+- one-time explicit consent inside the loopback companion, followed by default sharing for new sessions;
 - hooks fail closed and do not read stdin/transcripts while off;
 - payload redaction, HMAC pseudonymous IDs, deduplication, bounded queue and visible receipts;
-- disabling sharing clears pending local events and serializes against a new send.
+- per-session off/on/status commands are applied before capture and never uploaded;
+- revoking global authorization clears pending local events and session overrides.
+
+## Upgrade from the Git marketplace
+
+Quit Codex Desktop, refresh the marketplace, then reinstall the plugin so the new version is copied into the plugin cache:
+
+```bash
+codex plugin marketplace upgrade tracekin-remote-test
+codex plugin remove tracekin@tracekin-remote-test
+codex plugin add tracekin@tracekin-remote-test
+codex plugin list --json
+```
+
+Version `0.2.0+codex.20260916015659` adds the delivery dashboard and current-session controls.
 
 It does **not** claim that activity metadata is a useful training corpus, that a task is high quality, or that a token is owed. A later data product needs a separately consented human-reviewed sample lane and a published reward formula.
 
@@ -70,14 +84,14 @@ codex plugin list
 
 开启一个**新会话**，让 `SessionStart` hook 自动启动 Tracekin 本地面板。如果没有自动打开，先重启 Codex 并检查插件是否启用、hooks 是否已信任；手动启动只用于排查，生产测试使用与 hooks 相同的数据目录和非 demo 模式。
 
-在该电脑的面板中填写：
+在该电脑的正式面板中填写：
 
 - 允许的项目目录：另一台电脑上真实存在的测试项目绝对路径（本机 `/Users/bing/...` 路径在另一台电脑不适用）；
 - 数据发送到哪里：`https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest`；
 - 接收服务令牌：通过独立安全渠道复制本机 `artifacts/tracekin-gcp-receiver/receiver-token` 的内容；压缩包本身不含令牌；
-- 点击“保存共享范围”，再开启“共享所有任务数据 / 后台运行”。
+- 点击“保存共享范围”，再点击一次“同意并开始共享”。
 
-保存项目、地址或令牌后，Tracekin 会自动关闭共享并清空待发送队列；保存后要重新打开共享开关。
+保存项目、地址或令牌后，Tracekin 会撤回旧授权并清空待发送队列；保存后需要重新完成一次授权。
 
 ### 4. Hooks 冒烟测试
 
@@ -105,14 +119,14 @@ Tracekin remote smoke test: hooks
 
 预期 MCP 返回 `schema: tracekin.activity.v1`、当前 `sharing_enabled`/项目范围和 `proof_status: activity_only_not_training_proof`。MCP 查询本身是只读的；真正的后台采集由 Hooks 完成。
 
-### 6. 关闭共享的反向检查
+### 6. 当前会话暂停检查
 
-关闭面板共享开关，再发送一条新提示。预期“接收服务已确认”不再增加，待发送保持 0；重新开启后才恢复发送。
+新建会话并把 `tracekin off` 作为第一条消息，再发送一条普通提示。预期该会话的“接收服务已确认”不再增加，Dashboard 的“已暂停会话”增加；发送 `tracekin on` 后恢复。新建的其他会话仍默认共享。
 
 ### 7. 排错顺序
 
 - 面板显示“仅本机演示 · 零外发”：你打开的是 demo，关闭它并使用 `SessionStart` 启动的生产面板；
-- 没有任何事件：重启 Codex，确认新会话已启用 Tracekin，并在 Hooks 页完成信任；
-- 项目不匹配：把项目目录改成另一台电脑上的绝对路径，保存后重新打开共享；
+- 没有任何事件：重启 Codex，确认新会话已启用 Tracekin、Hooks 已信任，并在正式面板完成一次授权；
+- 项目不匹配：把项目目录改成另一台电脑上的绝对路径，保存后重新授权；
 - 401：重新复制令牌，确认地址只有 `https://.../ingest`，没有多余空格、查询串或片段；
 - 本机面板没有远程电脑数据：这是预期行为；本地面板只显示当前电脑的本地发送队列和回执。

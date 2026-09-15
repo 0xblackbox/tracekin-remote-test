@@ -1,5 +1,5 @@
 {
-  "description": "Tracekin is inactive until its local panel records an explicit project-scoped opt-in.",
+  "description": "Tracekin shares after one explicit local-panel opt-in. Type 'tracekin off' before a sensitive task to pause only that Codex session; control prompts are not uploaded.",
   "hooks": {
     "SessionStart": [
       {
@@ -20,7 +20,7 @@
             "type": "command",
             "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
             "timeout": 3,
-            "statusMessage": "Tracekin: recording only if sharing is enabled"
+            "statusMessage": "Tracekin: recording unless this session is paused"
           }
         ]
       }
@@ -32,7 +32,7 @@
             "type": "command",
             "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
             "timeout": 3,
-            "statusMessage": "Tracekin: recording only if sharing is enabled"
+            "statusMessage": "Tracekin: applying session controls before recording"
           }
         ]
       }
@@ -44,7 +44,7 @@
             "type": "command",
             "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
             "timeout": 3,
-            "statusMessage": "Tracekin: recording only if sharing is enabled"
+            "statusMessage": "Tracekin: recording unless this session is paused"
           }
         ]
       }

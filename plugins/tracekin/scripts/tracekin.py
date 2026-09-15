@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -20,7 +21,20 @@ import urllib.request
 MAX_INPUT = 262144
 MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
+SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
+PLUGIN_VERSION = "0.2.0+codex.20260916015659"
+SESSION_COMMANDS = {
+    "tracekin off": "off",
+    "/tracekin off": "off",
+    "tracekin 关闭本会话": "off",
+    "tracekin on": "on",
+    "/tracekin on": "on",
+    "tracekin 开启本会话": "on",
+    "tracekin status": "status",
+    "/tracekin status": "status",
+    "tracekin 状态": "status",
+}
 
 
 def home_dir():
@@ -59,14 +73,21 @@ class Store:
         with self.connect() as c:
             c.execute("CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")
             c.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)")
+            c.execute("CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)")
             if not c.execute("SELECT 1 FROM config").fetchone():
-                cfg = dict(sharing_enabled=False, share_all=False, projects=[], endpoint="", endpoint_token="", use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
+                cfg = dict(consent_granted=False, sharing_enabled=False, share_all=False, projects=[], endpoint="", endpoint_token="", use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
                 c.execute("INSERT INTO config VALUES(1, ?)", (json.dumps(cfg),))
             cfg = self.read_config(c)
+            migrated = False
+            if "consent_granted" not in cfg:
+                cfg["consent_granted"] = cfg.get("sharing_enabled") is True
+                migrated = True
             if "use_existing_pet" not in cfg:
                 # Existing installs predate the original-pet switch. Default to
                 # reusing the currently selected Codex pet when migrating.
                 cfg["use_existing_pet"] = True
+                migrated = True
+            if migrated:
                 c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
             if cfg["demo"] != demo:
                 raise InputError("演示与正式模式需要使用独立的数据目录")
@@ -94,6 +115,7 @@ class Store:
     def prune(c):
         # Retain bounded local receipts for deduplication, not full transcripts.
         c.execute("DELETE FROM events WHERE created < ?", (time.time() - EVENT_TTL,))
+        c.execute("DELETE FROM session_overrides WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
 
     def snapshot(self):
         with self.connect() as c:
@@ -102,11 +124,12 @@ class Store:
             cfg.pop("salt", None)
             cfg.pop("endpoint_token", None)
             counts = {r[0]: r[1] for r in c.execute("SELECT status, count(*) FROM events GROUP BY status")}
+            paused_sessions = c.execute("SELECT count(*) FROM session_overrides WHERE enabled=0").fetchone()[0]
             events = [{"payload": json.loads(r["payload"]), "status": r["status"]} for r in c.execute("SELECT * FROM events ORDER BY created DESC LIMIT 12")]
-        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof"}
+        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]}, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof"}
 
     def configure(self, changes):
-        if not isinstance(changes, dict) or set(changes) - {"sharing_enabled", "share_all", "projects", "endpoint", "endpoint_token", "use_existing_pet", "pet"}:
+        if not isinstance(changes, dict) or set(changes) - {"consent_granted", "sharing_enabled", "share_all", "projects", "endpoint", "endpoint_token", "use_existing_pet", "pet"}:
             raise InputError("设置字段无效")
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -143,20 +166,31 @@ class Store:
                 if type(changes["sharing_enabled"]) is not bool:
                     raise InputError("共享开关应为布尔值")
                 cfg["sharing_enabled"] = changes["sharing_enabled"]
+            if "consent_granted" in changes:
+                if type(changes["consent_granted"]) is not bool:
+                    raise InputError("授权状态应为布尔值")
+                cfg["consent_granted"] = changes["consent_granted"]
+                if not cfg["consent_granted"]:
+                    cfg["sharing_enabled"] = False
             if "share_all" in changes:
                 if type(changes["share_all"]) is not bool:
                     raise InputError("全部任务开关应为布尔值")
                 cfg["share_all"] = changes["share_all"]
             # Changing scope or destination requires a fresh explicit opt-in.
             scope_changed = old_scope != (cfg["projects"], cfg["endpoint"], cfg.get("endpoint_token", ""))
-            if scope_changed and not (changes.get("share_all") is True and changes.get("sharing_enabled") is True):
+            if scope_changed and not (changes.get("consent_granted") is True and changes.get("share_all") is True and changes.get("sharing_enabled") is True):
                 cfg["sharing_enabled"] = False
+                cfg["consent_granted"] = False
+            if cfg["sharing_enabled"] and not cfg.get("consent_granted"):
+                raise InputError("请先在本地面板完成一次共享授权")
             if cfg["sharing_enabled"] and ((not cfg["share_all"] and not cfg["projects"]) or not cfg["endpoint"]):
                 raise InputError("先配置接收地址，再主动勾选共享")
             if cfg["sharing_enabled"]:
                 valid_endpoint(cfg["endpoint"], self.demo_endpoint)
             if not cfg["sharing_enabled"] or scope_changed:
                 c.execute("DELETE FROM events WHERE status='pending'")
+            if not cfg.get("consent_granted"):
+                c.execute("DELETE FROM session_overrides")
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
         return self.snapshot()
 
@@ -165,18 +199,52 @@ class Store:
         raw = json.dumps(values, separators=(",", ":")).encode()
         return hmac.new(bytes.fromhex(cfg["salt"]), raw, hashlib.sha256).hexdigest()
 
+    @staticmethod
+    def parse_session_command(event):
+        if event.get("hook_event_name") != "UserPromptSubmit" or not isinstance(event.get("prompt"), str):
+            return None
+        return SESSION_COMMANDS.get(" ".join(event["prompt"].strip().split()).lower())
+
+    def apply_session_command(self, c, cfg, session_id, command):
+        session_hash = self.digest(cfg, "session", session_id)
+        if command == "off":
+            c.execute("INSERT OR REPLACE INTO session_overrides VALUES (?, 0, ?)", (session_hash, time.time()))
+            for row in c.execute("SELECT id, payload FROM events WHERE status='pending'").fetchall():
+                try:
+                    if json.loads(row["payload"]).get("session_id") == session_hash:
+                        c.execute("DELETE FROM events WHERE id=?", (row["id"],))
+                except (ValueError, TypeError):
+                    continue
+            return "session_disabled"
+        if command == "on":
+            c.execute("DELETE FROM session_overrides WHERE session_id=?", (session_hash,))
+            return "session_enabled" if cfg.get("sharing_enabled") else "global_disabled"
+        if not cfg.get("sharing_enabled"):
+            return "global_disabled"
+        row = c.execute("SELECT enabled FROM session_overrides WHERE session_id=?", (session_hash,)).fetchone()
+        return "session_disabled" if row and row[0] == 0 else "session_enabled"
+
     def record(self, event):
         if not isinstance(event, dict):
             return "invalid"
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             cfg = self.read_config(c)
-            if not cfg["sharing_enabled"]:
-                return "disabled"
             kind = event.get("hook_event_name")
             if kind not in {"PostToolUse", "Stop", "UserPromptSubmit"}:
                 return "unsupported"
-            for key in ("session_id", "turn_id", "cwd"):
+            if not isinstance(event.get("session_id"), str) or not event["session_id"] or len(event["session_id"]) > 4096:
+                return "invalid"
+            command = self.parse_session_command(event)
+            if command:
+                return self.apply_session_command(c, cfg, event["session_id"], command)
+            if not cfg["sharing_enabled"]:
+                return "disabled"
+            session_hash = self.digest(cfg, "session", event["session_id"])
+            row = c.execute("SELECT enabled FROM session_overrides WHERE session_id=?", (session_hash,)).fetchone()
+            if row and row[0] == 0:
+                return "session_disabled"
+            for key in ("turn_id", "cwd"):
                 if not isinstance(event.get(key), str) or not event[key] or len(event[key]) > 4096:
                     return "invalid"
             if not Path(event["cwd"]).is_absolute():
@@ -192,7 +260,7 @@ class Store:
             payload = {
                 "schema": SCHEMA, "id": event_id,
                 "project_id": self.digest(cfg, "project", max(matched, key=len) if matched else "all-projects"),
-                "session_id": self.digest(cfg, "session", event["session_id"]),
+                "session_id": session_hash,
                 "turn_id": self.digest(cfg, "turn", event["turn_id"]),
                 "event": kind, "observed_at": int(time.time()),
                 "source": "codex_hook", "synthetic": cfg["demo"], "privacy_mode": "full_task" if cfg.get("share_all") else "activity_only",
@@ -243,8 +311,10 @@ class Store:
             c.execute("BEGIN IMMEDIATE")
             cfg = self.read_config(c)
             cfg["sharing_enabled"] = False
+            cfg["consent_granted"] = False
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg),))
             c.execute("DELETE FROM events")
+            c.execute("DELETE FROM session_overrides")
         return self.snapshot()
 
 
@@ -277,13 +347,23 @@ def run_hook(home):
 
 
 def start_companion(home):
-    """Start the loopback UI once per local data directory; it never enables sharing."""
+    """Start the current loopback UI, replacing a companion from an older plugin cache."""
     runtime = Path(home) / "runtime.json"
     if runtime.exists():
         try:
-            pid = int(json.loads(runtime.read_text()).get("pid", 0))
+            info = json.loads(runtime.read_text())
+            pid = int(info.get("pid", 0))
             os.kill(pid, 0)
-            return "already_running"
+            if info.get("version") == PLUGIN_VERSION:
+                return "already_running"
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(20):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+            runtime.unlink(missing_ok=True)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             runtime.unlink(missing_ok=True)
     root = Path(os.environ.get("PLUGIN_ROOT", Path(__file__).resolve().parents[1]))

@@ -1,7 +1,7 @@
 {
   "name": "tracekin",
-  "version": "0.1.0+codex.20260915172931",
-  "description": "A local-first Codex companion with explicit, project-scoped Proof of AI Work sharing.",
+  "version": "0.2.0+codex.20260916015659",
+  "description": "A local-first Codex companion with one-time sharing consent, visible receipts, and per-session pause commands.",
   "author": {
     "name": "Local developer"
   },
@@ -9,11 +9,11 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Tracekin",
-    "shortDescription": "Use a native Codex pet while choosing what activity data to share.",
-    "longDescription": "Tracekin keeps the pet experience in Codex and adds a loopback settings panel for explicit project scope, default-off sharing, redacted activity events, and visible delivery receipts.",
+    "shortDescription": "Use a native Codex pet with transparent, session-controllable sharing.",
+    "longDescription": "Tracekin keeps the pet experience in Codex and adds one-time local sharing consent, a delivery dashboard, and deterministic tracekin off/on/status controls for the current session.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Use Tracekin: start its local settings panel, keep sharing off unless I explicitly choose a project and destination, and default to the currently selected Codex pet unless I ask to create a new one."
+    "defaultPrompt": "Use Tracekin in production mode: start its local panel, obtain one explicit sharing opt-in there, show delivery receipts, honor tracekin off/on/status for the current session, and keep using the selected Codex pet unless I ask to create one."
   }
 }

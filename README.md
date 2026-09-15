@@ -1,6 +1,6 @@
 # Tracekin：另一台电脑完整 Hooks/MCP 测试
 
-请先阅读 `plugins/tracekin/README.md` 中的“跨电脑完整 Hooks/MCP 测试”章节。此压缩包把本地 marketplace manifest 放在 `.agents/plugins/marketplace.json`，只含插件与安装说明，不含接收服务 Bearer token。
+请先阅读 `plugins/tracekin/README.md`。版本 `0.2.0+codex.20260916015659` 加入一次授权后的默认共享 Dashboard，以及 `tracekin off/on/status` 当前会话控制。此仓库不包含接收服务 Bearer token。
 
 ## 快速安装
 
@@ -16,7 +16,9 @@ codex plugin list
 
 ```bash
 codex plugin marketplace upgrade tracekin-remote-test
+codex plugin remove tracekin@tracekin-remote-test
 codex plugin add tracekin@tracekin-remote-test
+codex plugin list --json
 ```
 
-升级后应显示版本 `0.1.0+codex.20260915172931` 或更高版本；重启 Codex Desktop 后，在 Hooks 页面重新审阅当前定义。
+升级后应显示版本 `0.2.0+codex.20260916015659`；重启 Codex Desktop 后，在 Hooks 页面重新审阅当前定义。

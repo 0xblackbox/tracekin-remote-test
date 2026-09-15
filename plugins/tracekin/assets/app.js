@@ -11,9 +11,9 @@ function render(data, initial = false) {
   state = data;
   const c = data.config;
   $('mode').textContent = c.demo ? '仅本机演示 · 零外发' : '本机服务 · Codex 插件';
-  $('sharing-status').textContent = c.sharing_enabled ? (c.demo ? '全部任务 · 本机演示' : '全部任务 · 已开启') : '共享关闭';
-  $('mode-explainer').textContent = c.demo ? '这一页正在演示客户端授权流程。接收器也在本机，不会向平台发送数据。' : '选定项目和接收地址后，你可以随时开启或关闭共享。';
-  $('endpoint-note').textContent = c.demo ? '当前是本机测试接收器。切换到正式模式并配置 HTTPS 服务后，才会产生外部共享。' : '选择新项目或更换地址都会自动关闭共享，需要你重新勾选。';
+  $('sharing-status').textContent = c.sharing_enabled ? (c.demo ? '全部任务 · 本机演示' : '默认共享 · 已开启') : (c.consent_granted ? '全局共享已暂停' : '等待一次授权');
+  $('mode-explainer').textContent = c.demo ? '这一页正在演示客户端授权流程。接收器也在本机，不会向平台发送数据。' : '首次明确同意后，新会话默认共享；输入 tracekin off 只暂停当前会话。';
+  $('endpoint-note').textContent = c.demo ? '当前是本机测试接收器。切换到正式模式并配置 HTTPS 服务后，才会产生外部共享。' : '更换范围、地址或令牌后，需要重新进行一次授权。';
   const useExistingPet = Boolean(c.use_existing_pet);
   $('use-existing-pet').checked = useExistingPet;
   $('use-existing-pet').disabled = busy;
@@ -21,20 +21,23 @@ function render(data, initial = false) {
   $('existing-pet-note').hidden = !useExistingPet;
   $('sharing').checked = c.sharing_enabled;
   $('sharing').disabled = busy || !c.endpoint;
-  $('quick-start').hidden = Boolean(c.sharing_enabled) || busy;
-  $('advanced-scope').open = Boolean(!c.projects.length && !c.demo);
+  $('sharing-control').hidden = !c.demo;
+  $('quick-start').hidden = Boolean(c.consent_granted) || busy;
+  $('quick-share').disabled = busy || !c.endpoint;
+  $('advanced-scope').open = Boolean(!c.endpoint && !c.demo);
   $('demo-event').hidden = !c.demo;
   $('demo-event').disabled = busy || !c.sharing_enabled;
   $('pending').textContent = data.counts.pending;
   $('sent').textContent = data.counts.sent;
+  $('paused').textContent = data.session_controls.paused_sessions;
   $('sent-label').textContent = c.demo ? '本机接收器已确认' : '接收服务已确认';
-  $('connection').textContent = !c.sharing_enabled ? '共享已关闭' : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '共享已开启';
+  $('connection').textContent = !c.sharing_enabled ? (c.consent_granted ? '全局共享已暂停' : '等待一次授权') : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '默认共享运行中';
   $('delivery-note').textContent = c.demo ? '所有演示事件均带 synthetic 标记' : '回执只代表接收，不代表质量验收';
   $('empty').hidden = Boolean(data.events.length);
   $('events').replaceChildren(...data.events.map(({payload, status}) => {
     const card = document.createElement('article'); card.className = 'event';
     const head = document.createElement('div'); head.className = 'event-head';
-    const title = document.createElement('span'); title.textContent = payload.event === 'Stop' ? '任务结束事件' : '工具活动事件';
+    const title = document.createElement('span'); title.textContent = {Stop: '任务结束事件', UserPromptSubmit: '提示词事件', PostToolUse: '工具活动事件'}[payload.event] || '任务事件';
     const label = document.createElement('span'); label.textContent = status === 'sent' ? (c.demo ? '本机已接收' : '接收方已确认') : '待发送';
     head.append(title, label); const pre = document.createElement('pre'); pre.textContent = JSON.stringify(payload, null, 2);
     card.append(head, pre); return card;
@@ -54,12 +57,12 @@ async function act(path, data, message) {
 }
 $('scope-form').onsubmit = async (e) => {
   e.preventDefault();
-  const next = await act('/api/config', {projects: $('projects').value.split('\n').map(x => x.trim()).filter(Boolean), endpoint: $('endpoint').value.trim(), endpoint_token: $('endpoint-token').value}, '范围已保存。请再主动勾选共享。');
+  const next = await act('/api/config', {projects: $('projects').value.split('\n').map(x => x.trim()).filter(Boolean), endpoint: $('endpoint').value.trim(), endpoint_token: $('endpoint-token').value}, '范围已保存。请完成一次明确授权。');
   if (next) { $('projects').value = next.config.projects.join('\n'); $('endpoint').value = next.config.endpoint; $('endpoint-token').value = ''; }
 };
-$('quick-share').onclick = () => act('/api/config', {projects: [], endpoint: state.config.endpoint, sharing_enabled: true, share_all: true}, '已开启全部任务共享。之后 Tracekin 会在后台运行。');
-$('quick-local').onclick = () => act('/api/config', {projects: [], endpoint: state.config.endpoint, sharing_enabled: false, share_all: false}, '已选择仅本地，宠物仍会照常陪伴。');
-$('sharing').onchange = () => act('/api/config', {sharing_enabled: $('sharing').checked}, $('sharing').checked ? '只处理勾选后的新事件。' : '共享已关闭，待发送队列已清空。');
+$('quick-share').onclick = () => act('/api/config', {projects: [], endpoint: state.config.endpoint, consent_granted: true, sharing_enabled: true, share_all: true}, '授权已记录。新会话默认共享；敏感会话请先输入 tracekin off。');
+$('quick-local').onclick = () => act('/api/config', {consent_granted: false, sharing_enabled: false, share_all: false}, '当前保持本地模式，宠物仍会照常陪伴。');
+$('sharing').onchange = () => act('/api/config', {consent_granted: $('sharing').checked, sharing_enabled: $('sharing').checked}, $('sharing').checked ? '演示共享已开启。' : '演示共享已关闭。');
 $('use-existing-pet').onchange = () => act('/api/config', {use_existing_pet: $('use-existing-pet').checked}, $('use-existing-pet').checked ? '已切换为沿用当前 Codex 宠物。' : '已切换为自定义宠物创建流程。');
 $('pet-form').onsubmit = async (e) => {
   e.preventDefault();
@@ -71,6 +74,6 @@ $('pet-form').onsubmit = async (e) => {
 };
 $('copy-prompt').onclick = async () => { try { await navigator.clipboard.writeText($('pet-prompt').value); notice('提示词已复制。'); } catch { $('pet-prompt').focus(); $('pet-prompt').select(); notice('请复制已选中的提示词。'); } };
 $('demo-event').onclick = () => act('/api/demo-event', {}, '两条合成事件已通过真实 Hook 脚本进入队列。');
-$('clear').onclick = () => { if (confirm('关闭共享并清除本地贡献记录？这不会删除接收方已经收到的数据，也不会影响原生宠物。')) act('/api/clear', {}, '共享已关闭，本地贡献记录已清除。'); };
+$('clear').onclick = () => { if (confirm('撤回全局共享授权并清除本地贡献记录？这不会删除接收方已经收到的数据，也不会影响原生宠物。')) act('/api/clear', {}, '授权已撤回，本地贡献记录已清除。'); };
 async function refresh() { if (busy) return; try { render(await api('/api/state'), !ready); ready = true; } catch (e) { notice(e.message); } }
 refresh(); setInterval(refresh, 2500);
