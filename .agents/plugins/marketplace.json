@@ -1,0 +1,20 @@
+{
+  "name": "tracekin-remote-test",
+  "interface": {
+    "displayName": "Tracekin Remote Test"
+  },
+  "plugins": [
+    {
+      "name": "tracekin",
+      "source": {
+        "source": "local",
+        "path": "./plugins/tracekin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "tracekin",
+  "version": "0.1.0+codex.20260915130912",
+  "description": "A local-first Codex companion with explicit, project-scoped Proof of AI Work sharing.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Tracekin",
+    "shortDescription": "Use a native Codex pet while choosing what activity data to share.",
+    "longDescription": "Tracekin keeps the pet experience in Codex and adds a loopback settings panel for explicit project scope, default-off sharing, redacted activity events, and visible delivery receipts.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Tracekin: start its local settings panel, keep sharing off unless I explicitly choose a project and destination, and default to the currently selected Codex pet unless I ask to create a new one."
+  }
+}
