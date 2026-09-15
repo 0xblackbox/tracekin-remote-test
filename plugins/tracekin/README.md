@@ -42,7 +42,7 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
-Version `0.2.1+codex.20260916051837` adds the delivery dashboard and current-session controls.
+Version `0.2.2+codex.20260916053911` adds the delivery dashboard and current-session controls.
 
 It does **not** claim that activity metadata is a useful training corpus, that a task is high quality, or that a token is owed. A later data product needs a separately consented human-reviewed sample lane and a published reward formula.
 

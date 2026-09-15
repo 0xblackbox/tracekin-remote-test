@@ -64,7 +64,9 @@ class App:
         self.collector = ThreadingHTTPServer(("127.0.0.1", 0), Collector)
         self.store.demo_endpoint = f"http://127.0.0.1:{self.collector.server_port}{route}"
         # A fresh demo receiver has a new destination: stop sharing until re-authorized.
-        self.store.configure({"endpoint": self.store.demo_endpoint, "sharing_enabled": False})
+        # Bind the disposable demo receiver to the current project so the
+        # demo toggle follows the same project boundary as production mode.
+        self.store.configure({"projects": [self.project], "endpoint": self.store.demo_endpoint, "sharing_enabled": False})
         threading.Thread(target=self.collector.serve_forever, daemon=True).start()
 
     def snapshot(self):

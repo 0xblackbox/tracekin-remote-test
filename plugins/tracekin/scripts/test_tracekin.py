@@ -12,7 +12,7 @@ from tracekin import PLUGIN_VERSION, Store
 
 
 def main():
-    assert PLUGIN_VERSION == "0.2.1+codex.20260916051837"
+    assert PLUGIN_VERSION == "0.2.2+codex.20260916053911"
     with tempfile.TemporaryDirectory(prefix="tracekin-test-") as d:
         root = Path(d) / "project"; root.mkdir()
         absent = Path(d) / "absent"

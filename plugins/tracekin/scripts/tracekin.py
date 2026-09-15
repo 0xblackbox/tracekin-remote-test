@@ -23,7 +23,7 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.2.1+codex.20260916051837"
+PLUGIN_VERSION = "0.2.2+codex.20260916053911"
 SESSION_COMMANDS = {
     "tracekin off": "off",
     "/tracekin off": "off",
