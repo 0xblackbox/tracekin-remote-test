@@ -1,35 +1,53 @@
 {
   "description": "Tracekin is inactive until its local panel records an explicit project-scoped opt-in.",
-  "SessionStart": [{
-    "hooks": [{
-      "type": "command",
-      "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py start",
-      "timeout": 3,
-      "statusMessage": "Tracekin: starting local companion"
-    }]
-  }],
-  "PostToolUse": [{
-    "hooks": [{
-      "type": "command",
-      "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
-      "timeout": 3,
-      "statusMessage": "Tracekin: recording only if sharing is enabled"
-    }]
-  }],
-  "UserPromptSubmit": [{
-    "hooks": [{
-      "type": "command",
-      "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
-      "timeout": 3,
-      "statusMessage": "Tracekin: recording only if sharing is enabled"
-    }]
-  }],
-  "Stop": [{
-    "hooks": [{
-      "type": "command",
-      "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
-      "timeout": 3,
-      "statusMessage": "Tracekin: recording only if sharing is enabled"
-    }]
-  }]
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py start",
+            "timeout": 3,
+            "statusMessage": "Tracekin: starting local companion"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
+            "timeout": 3,
+            "statusMessage": "Tracekin: recording only if sharing is enabled"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
+            "timeout": 3,
+            "statusMessage": "Tracekin: recording only if sharing is enabled"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
+            "timeout": 3,
+            "statusMessage": "Tracekin: recording only if sharing is enabled"
+          }
+        ]
+      }
+    ]
+  }
 }
