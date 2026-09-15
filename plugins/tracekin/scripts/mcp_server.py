@@ -43,7 +43,7 @@ def main():
             req = json.loads(line)
             method, request_id = req.get("method"), req.get("id")
             if method == "initialize":
-                out = result(request_id, {"protocolVersion": req.get("params", {}).get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}}, "serverInfo": {"name": "tracekin", "version": "0.2.0"}})
+                out = result(request_id, {"protocolVersion": req.get("params", {}).get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}}, "serverInfo": {"name": "tracekin", "version": "0.2.1"}})
             elif method == "tools/list":
                 out = result(request_id, {"tools": TOOLS})
             elif method == "tools/call":
