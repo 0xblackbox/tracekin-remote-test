@@ -24,6 +24,7 @@ class App:
         self.token = secrets.token_urlsafe(32)
         self.demo = demo
         self.project = str(Path(project or os.getcwd()).resolve())
+        self.store.set_active_project(self.project)
         self.stop = threading.Event()
         self.last_delivery = "idle"
         self.received = set()
@@ -73,8 +74,15 @@ class App:
         data = self.store.snapshot()
         with self.receive_lock:
             received = len(self.received)
-        data.update(default_project=self.project, delivery=self.last_delivery, demo_received=received)
+        data.update(default_project=data["config"].get("active_project") or self.project, delivery=self.last_delivery, demo_received=received)
         return data
+
+    def decide(self, decision):
+        if decision == "allow":
+            return self.store.allow_active_project(self.store.snapshot()["config"].get("active_project") or self.project)
+        if decision == "deny":
+            return self.store.deny_sharing()
+        raise InputError("共享选择无效")
 
     def worker(self):
         delay = 0.5
@@ -149,7 +157,16 @@ def handler_for(app):
                     raise InputError("请求格式无效")
                 body = json.loads(self.rfile.read(size))
                 path = urlsplit(self.path).path
-                if path == "/api/config":
+                if path == "/api/consent":
+                    if set(body) != {"decision"}:
+                        raise InputError("共享选择无效")
+                    app.decide(body["decision"])
+                elif path == "/api/config":
+                    # The production panel exposes only pet preferences. The
+                    # project and platform destination are fixed by the
+                    # current SessionStart context and the allow/deny action.
+                    if set(body) - {"use_existing_pet", "pet"}:
+                        raise InputError("项目和接收地址由 Tracekin 自动管理")
                     app.store.configure(body)
                 elif path == "/api/clear":
                     app.store.clear_local()

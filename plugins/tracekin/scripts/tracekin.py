@@ -23,7 +23,9 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.2.2+codex.20260916053911"
+PLUGIN_VERSION = "0.3.0+codex.20260915222800"
+PLATFORM_PROFILE = "tracekin_cloud_v1"
+PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 SESSION_COMMANDS = {
     "tracekin off": "off",
     "/tracekin off": "off",
@@ -75,7 +77,7 @@ class Store:
             c.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)")
             c.execute("CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)")
             if not c.execute("SELECT 1 FROM config").fetchone():
-                cfg = dict(consent_granted=False, sharing_enabled=False, share_all=False, projects=[], endpoint="", endpoint_token="", use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
+                cfg = dict(consent_granted=False, consent_decision="pending", sharing_enabled=False, share_all=False, projects=[], active_project="", endpoint="" if demo else PLATFORM_ENDPOINT, endpoint_token="", platform_profile="demo" if demo else PLATFORM_PROFILE, use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
                 c.execute("INSERT INTO config VALUES(1, ?)", (json.dumps(cfg),))
             cfg = self.read_config(c)
             migrated = False
@@ -86,6 +88,25 @@ class Store:
                 # Existing installs predate the original-pet switch. Default to
                 # reusing the currently selected Codex pet when migrating.
                 cfg["use_existing_pet"] = True
+                migrated = True
+            if "active_project" not in cfg:
+                cfg["active_project"] = cfg.get("projects", [""])[0] if cfg.get("projects") else ""
+                migrated = True
+            if "consent_decision" not in cfg:
+                cfg["consent_decision"] = "allowed" if cfg.get("consent_granted") else "pending"
+                migrated = True
+            if not demo and (cfg.get("platform_profile") != PLATFORM_PROFILE or cfg.get("endpoint") != PLATFORM_ENDPOINT or cfg.get("endpoint_token")):
+                # The hosted destination is part of the signed plugin profile.
+                # Migrating from a user-editable destination requires one fresh
+                # allow/deny choice before any event can leave the machine.
+                cfg["platform_profile"] = PLATFORM_PROFILE
+                cfg["endpoint"] = PLATFORM_ENDPOINT
+                cfg["endpoint_token"] = ""
+                cfg["sharing_enabled"] = False
+                cfg["consent_granted"] = False
+                cfg["consent_decision"] = "pending"
+                c.execute("DELETE FROM events WHERE status='pending'")
+                c.execute("DELETE FROM session_overrides")
                 migrated = True
             if migrated:
                 c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
@@ -135,7 +156,50 @@ class Store:
             counts = {r[0]: r[1] for r in c.execute("SELECT status, count(*) FROM events GROUP BY status")}
             paused_sessions = c.execute("SELECT count(*) FROM session_overrides WHERE enabled=0").fetchone()[0]
             events = [{"payload": json.loads(r["payload"]), "status": r["status"]} for r in c.execute("SELECT * FROM events ORDER BY created DESC LIMIT 12")]
-        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]}, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof"}
+        active = cfg.get("active_project", "") if isinstance(cfg.get("active_project", ""), str) else ""
+        configured_projects = cfg.get("projects", []) if isinstance(cfg.get("projects", []), list) else []
+        try:
+            authorized = bool(active and cfg.get("consent_granted") and cfg.get("sharing_enabled") and any(Path(active) == Path(p) or Path(p) in Path(active).parents for p in configured_projects if isinstance(p, str)))
+        except (TypeError, ValueError):
+            authorized = False
+        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "current_project_authorized": authorized, "platform": {"name": "Tracekin Cloud", "fixed_endpoint": not cfg.get("demo")}, "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]}, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof"}
+
+    @staticmethod
+    def validate_project(project):
+        if not isinstance(project, (str, os.PathLike)):
+            raise InputError("当前项目目录无效")
+        value = Path(project).expanduser()
+        if not value.is_absolute():
+            raise InputError("当前项目需要使用完整目录")
+        value = value.resolve()
+        if not value.is_dir() or value in (Path("/"), Path.home()):
+            raise InputError("请选择具体项目目录，而不是根目录或整个用户目录")
+        return str(value)
+
+    def set_active_project(self, project):
+        project = self.validate_project(project)
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            cfg = self.read_config(c)
+            changed = cfg.get("active_project") != project
+            cfg["active_project"] = project
+            if not cfg.get("consent_granted") and not cfg.get("sharing_enabled"):
+                cfg["projects"] = [project]
+                if changed:
+                    cfg["consent_decision"] = "pending"
+            c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
+        return self.snapshot()
+
+    def allow_active_project(self, project=None):
+        if project is not None:
+            self.set_active_project(project)
+        active = self.snapshot()["config"].get("active_project", "")
+        active = self.validate_project(active)
+        endpoint = self.demo_endpoint if self.demo else PLATFORM_ENDPOINT
+        return self.configure({"projects": [active], "endpoint": endpoint, "endpoint_token": "", "consent_granted": True, "sharing_enabled": True, "share_all": True})
+
+    def deny_sharing(self):
+        return self.configure({"consent_granted": False, "sharing_enabled": False, "share_all": False})
 
     def configure(self, changes):
         if not isinstance(changes, dict) or set(changes) - {"consent_granted", "sharing_enabled", "share_all", "projects", "endpoint", "endpoint_token", "use_existing_pet", "pet"}:
@@ -161,11 +225,15 @@ class Store:
                 cfg["projects"] = list(dict.fromkeys(resolved))
             if "endpoint" in changes:
                 endpoint = changes["endpoint"]
+                if not self.demo and endpoint != PLATFORM_ENDPOINT:
+                    raise InputError("正式版接收地址由 Tracekin 平台固定管理")
                 cfg["endpoint"] = valid_endpoint(endpoint, self.demo_endpoint) if endpoint else ""
             if "endpoint_token" in changes:
                 endpoint_token = changes["endpoint_token"]
                 if not isinstance(endpoint_token, str) or len(endpoint_token) > 4096 or any(ord(ch) < 32 for ch in endpoint_token):
                     raise InputError("接收服务令牌无效")
+                if not self.demo and endpoint_token:
+                    raise InputError("正式版不接受本机自定义接收令牌")
                 cfg["endpoint_token"] = endpoint_token
             if "use_existing_pet" in changes:
                 if type(changes["use_existing_pet"]) is not bool:
@@ -179,6 +247,7 @@ class Store:
                 if type(changes["consent_granted"]) is not bool:
                     raise InputError("授权状态应为布尔值")
                 cfg["consent_granted"] = changes["consent_granted"]
+                cfg["consent_decision"] = "allowed" if cfg["consent_granted"] else "denied"
                 if not cfg["consent_granted"]:
                     cfg["sharing_enabled"] = False
             if "share_all" in changes:
@@ -190,10 +259,11 @@ class Store:
             if scope_changed and not (changes.get("consent_granted") is True and changes.get("sharing_enabled") is True):
                 cfg["sharing_enabled"] = False
                 cfg["consent_granted"] = False
+                cfg["consent_decision"] = "pending"
             if cfg["sharing_enabled"] and not cfg.get("consent_granted"):
                 raise InputError("请先在本地面板完成一次共享授权")
             if cfg["sharing_enabled"] and (not cfg["projects"] or not cfg["endpoint"]):
-                raise InputError("先配置项目目录和接收地址，再开启共享")
+                raise InputError("先让 Tracekin 识别当前项目，再开启共享")
             if cfg["sharing_enabled"]:
                 valid_endpoint(cfg["endpoint"], self.demo_endpoint)
             if not cfg["sharing_enabled"] or scope_changed:
@@ -324,6 +394,7 @@ class Store:
             cfg = self.read_config(c)
             cfg["sharing_enabled"] = False
             cfg["consent_granted"] = False
+            cfg["consent_decision"] = "denied"
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg),))
             c.execute("DELETE FROM events")
             c.execute("DELETE FROM session_overrides")
@@ -358,8 +429,14 @@ def run_hook(home):
     store.record(json.loads(raw))
 
 
-def start_companion(home):
+def start_companion(home, project=None):
     """Start the current loopback UI, replacing a companion from an older plugin cache."""
+    store = Store(home)
+    try:
+        project = store.validate_project(project or os.getcwd())
+        store.set_active_project(project)
+    except InputError:
+        project = None
     runtime = Path(home) / "runtime.json"
     if runtime.exists():
         try:
@@ -381,8 +458,26 @@ def start_companion(home):
     root = Path(os.environ.get("PLUGIN_ROOT", Path(__file__).resolve().parents[1]))
     Path(home).mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(os.devnull, "w") as sink:
-        subprocess.Popen([sys.executable, str(root / "scripts" / "serve.py"), "--home", str(home)], stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, start_new_session=True, close_fds=True)
+        command = [sys.executable, str(root / "scripts" / "serve.py"), "--home", str(home)]
+        if project:
+            command += ["--project", str(project)]
+        subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, start_new_session=True, close_fds=True)
     return "started"
+
+
+def session_start_project():
+    fallback = os.getcwd()
+    if sys.stdin.isatty():
+        return fallback
+    raw = sys.stdin.buffer.read(MAX_INPUT + 1)
+    if len(raw) > MAX_INPUT:
+        return fallback
+    try:
+        value = json.loads(raw) if raw else {}
+        cwd = value.get("cwd")
+        return cwd if isinstance(cwd, str) and cwd else fallback
+    except (ValueError, TypeError):
+        return fallback
 
 
 def main():
@@ -392,7 +487,8 @@ def main():
     args = parser.parse_args()
     if args.action == "start":
         try:
-            print(json.dumps({"tracekin": start_companion(args.home)}))
+            project = session_start_project()
+            print(json.dumps({"tracekin": start_companion(args.home, project), "project": project}))
         except (OSError, ValueError, TypeError):
             print(json.dumps({"tracekin": "not_started"}))
     elif args.action == "hook":

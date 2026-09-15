@@ -8,11 +8,11 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import PLUGIN_VERSION, Store
+from tracekin import PLATFORM_ENDPOINT, PLUGIN_VERSION, Store
 
 
 def main():
-    assert PLUGIN_VERSION == "0.2.2+codex.20260916053911"
+    assert PLUGIN_VERSION == "0.3.0+codex.20260915222800"
     with tempfile.TemporaryDirectory(prefix="tracekin-test-") as d:
         root = Path(d) / "project"; root.mkdir()
         absent = Path(d) / "absent"
@@ -24,12 +24,15 @@ def main():
             cfg.pop("use_existing_pet")
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg),))
         assert Store(Path(d) / "legacy", demo=False).snapshot()["config"]["use_existing_pet"] is True
-        assert Store(Path(d) / "legacy", demo=False).snapshot()["config"]["consent_granted"] is False
+        legacy_state = Store(Path(d) / "legacy", demo=False).snapshot()
+        assert legacy_state["config"]["consent_granted"] is False
+        assert legacy_state["config"]["endpoint"] == PLATFORM_ENDPOINT
+        assert legacy_state["config"]["consent_decision"] == "pending"
         store = Store(Path(d) / "db", demo=False)
         assert store.snapshot()["config"]["use_existing_pet"] is True
         assert store.configure({"use_existing_pet": False})["config"]["use_existing_pet"] is False
         assert store.configure({"use_existing_pet": True})["config"]["use_existing_pet"] is True
-        store.configure({"projects": [str(root)], "endpoint": "https://collector.invalid/ingest"})
+        store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT})
         assert store.enabled() is False
         disabled_status = {"hook_event_name": "UserPromptSubmit", "session_id": "disabled-session", "turn_id": "status", "cwd": str(root), "prompt": "tracekin status"}
         assert store.record(disabled_status) == "global_disabled"
@@ -56,12 +59,32 @@ def main():
         assert store.record(dict(event, turn_id="resumed-turn", tool_use_id="resumed-call")) == "queued"
         assert store.snapshot()["session_controls"]["paused_sessions"] == 0
         store.clear_local()
+        allowed = store.allow_active_project(root)
+        assert allowed["config"]["projects"] == [str(root.resolve())]
+        assert allowed["config"]["endpoint"] == PLATFORM_ENDPOINT
+        assert allowed["current_project_authorized"] is True
+        denied = store.deny_sharing()
+        assert denied["config"]["consent_decision"] == "denied" and not denied["config"]["sharing_enabled"]
+        mcp_home = Path(d) / "mcp-home"
+        mcp_input = "\n".join([
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "tracekin_allow", "arguments": {}}}),
+            json.dumps({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "tracekin_status", "arguments": {}}}),
+        ]) + "\n"
+        mcp_env = dict(os.environ, TRACEKIN_HOME=str(mcp_home))
+        mcp = subprocess.run([sys.executable, str(Path(__file__).with_name("mcp_server.py"))], input=mcp_input, text=True, capture_output=True, cwd=root, env=mcp_env)
+        assert mcp.returncode == 0, mcp.stderr
+        mcp_lines = [json.loads(line) for line in mcp.stdout.splitlines()]
+        assert {tool["name"] for tool in mcp_lines[1]["result"]["tools"]} >= {"tracekin_allow", "tracekin_deny", "tracekin_status"}
+        assert mcp_lines[2]["result"]["structuredContent"]["config"]["projects"] == [str(root.resolve())]
+        assert mcp_lines[3]["result"]["structuredContent"]["current_project_authorized"] is True
         assert store.snapshot()["counts"] == {"pending": 0, "sent": 0} and not store.enabled() and not store.snapshot()["config"]["consent_granted"]
         # Full-task mode is a deliberate second consent branch: raw hook fields are retained,
         # including a synthetic sentinel, while the project boundary remains enforced.
         child = root / "child"; child.mkdir()
         sibling = Path(d) / "sibling"; sibling.mkdir()
-        assert store.configure({"projects": [str(root)], "consent_granted": True, "share_all": True, "sharing_enabled": True})["config"]["sharing_enabled"] is True
+        assert store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT, "consent_granted": True, "share_all": True, "sharing_enabled": True})["config"]["sharing_enabled"] is True
         full = dict(event, cwd=str(child), tool_input={"command": "FULL_PRIVATE_COMMAND"}, tool_response="FULL_PRIVATE_OUTPUT")
         assert store.record(full) == "queued"
         raw_full = store.db.read_bytes()

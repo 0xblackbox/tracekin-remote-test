@@ -11,31 +11,25 @@ function render(data, initial = false) {
   state = data;
   const c = data.config;
   const projects = Array.isArray(c.projects) ? c.projects : [];
-  const scopeReady = projects.length > 0;
+  const currentAuthorized = Boolean(data.current_project_authorized);
   $('mode').textContent = c.demo ? '仅本机演示 · 零外发' : '本机服务 · Codex 插件';
-  $('sharing-status').textContent = c.sharing_enabled && scopeReady ? (c.demo ? '全部任务 · 本机演示' : '默认共享 · 已开启') : c.consent_granted && !scopeReady ? '需要确认项目' : c.consent_granted ? '全局共享已暂停' : '等待一次授权';
-  $('mode-explainer').textContent = c.demo ? '这一页正在演示客户端授权流程。接收器也在本机，不会向平台发送数据。' : '首次明确同意后，新会话默认共享；输入 tracekin off 只暂停当前会话。';
-  $('endpoint-note').textContent = c.demo ? '当前是本机测试接收器。切换到正式模式并配置 HTTPS 服务后，才会产生外部共享。' : '更换范围、地址或令牌后，需要重新进行一次授权。';
+  $('sharing-status').textContent = c.sharing_enabled && currentAuthorized ? (c.demo ? '本机演示 · 已允许' : '默认共享 · 已允许') : c.consent_decision === 'denied' ? '已拒绝 · 保持本地' : '等待允许当前项目';
+  $('mode-explainer').textContent = c.demo ? '这是本机演示接收器，不会访问外部网络。正式版自动使用 Tracekin Cloud；这里仅选择是否允许。' : '项目目录和平台接收地址由 Tracekin 自动填入；允许一次后，新会话默认共享。';
+  $('current-project').textContent = data.default_project || '当前会话未提供项目目录';
   const useExistingPet = Boolean(c.use_existing_pet);
   $('use-existing-pet').checked = useExistingPet;
   $('use-existing-pet').disabled = busy;
   $('custom-pet-settings').hidden = useExistingPet;
   $('existing-pet-note').hidden = !useExistingPet;
-  $('sharing').checked = c.sharing_enabled;
-  $('sharing').disabled = busy || !c.endpoint;
-  $('sharing-control').hidden = !c.demo;
-  // Show the action again when an older install has consent but no bound
-  // project, or when global sharing was paused. This avoids a dead-end state.
-  $('quick-start').hidden = Boolean(c.consent_granted && c.sharing_enabled && scopeReady) || busy;
-  $('quick-share').disabled = busy || !c.endpoint;
-  $('advanced-scope').open = Boolean(!c.endpoint && !c.demo);
+  $('quick-share').disabled = busy || !data.default_project;
+  $('quick-local').disabled = busy;
   $('demo-event').hidden = !c.demo;
   $('demo-event').disabled = busy || !c.sharing_enabled;
   $('pending').textContent = data.counts.pending;
   $('sent').textContent = data.counts.sent;
   $('paused').textContent = data.session_controls.paused_sessions;
   $('sent-label').textContent = c.demo ? '本机接收器已确认' : '接收服务已确认';
-  $('connection').textContent = !c.sharing_enabled ? (c.consent_granted ? '全局共享已暂停' : '等待一次授权') : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '默认共享运行中';
+  $('connection').textContent = !c.sharing_enabled ? (c.consent_decision === 'denied' ? '本地模式' : '等待允许') : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '默认共享运行中';
   $('delivery-note').textContent = c.demo ? '所有演示事件均带 synthetic 标记' : '回执只代表接收，不代表质量验收';
   $('empty').hidden = Boolean(data.events.length);
   $('events').replaceChildren(...data.events.map(({payload, status}) => {
@@ -48,8 +42,6 @@ function render(data, initial = false) {
   }));
   if (initial) {
     $('pet-name').value = c.pet.name; $('pet-concept').value = c.pet.concept;
-    $('projects').value = projects.join('\n') || data.default_project;
-    $('endpoint').value = c.endpoint; $('endpoint').readOnly = c.demo;
   }
 }
 async function act(path, data, message) {
@@ -59,17 +51,8 @@ async function act(path, data, message) {
   catch (e) { notice(e.message); }
   finally { busy = false; if (state) render(state); }
 }
-$('scope-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const payload = {projects: $('projects').value.split('\n').map(x => x.trim()).filter(Boolean), endpoint: $('endpoint').value.trim()};
-  if ($('clear-token').checked) payload.endpoint_token = '';
-  else if ($('endpoint-token').value) payload.endpoint_token = $('endpoint-token').value;
-  const next = await act('/api/config', payload, '范围已保存；如状态提示等待授权，请点击允许共享。');
-  if (next) { $('projects').value = next.config.projects.join('\n'); $('endpoint').value = next.config.endpoint; $('endpoint-token').value = ''; $('clear-token').checked = false; }
-};
-$('quick-share').onclick = () => act('/api/config', {projects: [state.default_project], endpoint: state.config.endpoint, consent_granted: true, sharing_enabled: true, share_all: true}, '授权已记录。当前项目的新会话默认共享；敏感会话请先输入 tracekin off。');
-$('quick-local').onclick = () => act('/api/config', {consent_granted: false, sharing_enabled: false, share_all: false}, '当前保持本地模式，宠物仍会照常陪伴。');
-$('sharing').onchange = () => act('/api/config', {consent_granted: $('sharing').checked, sharing_enabled: $('sharing').checked}, $('sharing').checked ? '演示共享已开启。' : '演示共享已关闭。');
+ $('quick-share').onclick = () => act('/api/consent', {decision: 'allow'}, '已允许当前项目共享。新会话默认运行；敏感任务请先输入 tracekin off。');
+ $('quick-local').onclick = () => act('/api/consent', {decision: 'deny'}, '已拒绝共享，当前项目保持本地模式。');
 $('use-existing-pet').onchange = () => act('/api/config', {use_existing_pet: $('use-existing-pet').checked}, $('use-existing-pet').checked ? '已切换为沿用当前 Codex 宠物。' : '已切换为自定义宠物创建流程。');
 $('pet-form').onsubmit = async (e) => {
   e.preventDefault();

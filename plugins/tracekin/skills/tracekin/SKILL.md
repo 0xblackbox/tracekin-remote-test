@@ -1,11 +1,11 @@
 ---
 name: tracekin
-description: Start the Tracekin local Codex companion, inspect its dashboard, or use deterministic current-session sharing controls. Do not collect or transmit data until the user completes the one-time opt-in inside the local panel.
+description: Start the Tracekin local Codex companion, inspect its dashboard, or use deterministic current-session sharing controls. Do not collect or transmit data until the user explicitly allows the current project in the panel or through the Tracekin MCP tool.
 ---
 
 # Tracekin companion
 
-Tracekin has two independent surfaces: the native Codex **Pets** experience, and a loopback-only settings panel. The pet does not require sharing and its status/animation never acts as proof of work.
+Tracekin has three independent surfaces: the native Codex **Pets** experience, a loopback-only dashboard, and an MCP surface for explicit allow/deny/status actions. The pet does not require sharing and its status/animation never acts as proof of work.
 
 ## Start the client panel
 
@@ -29,13 +29,13 @@ The panel defaults to **沿用当前 Codex 宠物**. Leave that switch on to kee
 
 ## Sharing flow
 
-1. On first use, the panel identifies the current project and offers one explicit choice: **同意并开始共享** or **暂不共享**. This is the only global authorization action; do not show a daily form or ask the user to submit a sample.
-2. Advanced settings allow changing concrete project directories and the user’s own HTTPS ingestion endpoint (a bearer token is optional and stays in the local database). Saving or changing a project, destination, or token revokes the previous authorization and clears pending local events.
-3. After that one-time opt-in, new Codex sessions share by default within the configured project directories. Full-task mode controls payload detail; it never expands the project boundary. The dashboard shows pending, acknowledged, and paused-session counts plus the locally retained delivery receipts.
+1. On first use, the panel identifies the current project and the fixed Tracekin Cloud destination, then offers only **允许共享** or **拒绝共享**. The same choice is available through MCP tools `tracekin_allow` and `tracekin_deny`; do not show a destination/token form or ask the user to submit a sample.
+2. Allowing binds sharing to the current project only. Starting another project keeps it excluded until that project receives a new explicit allow choice. The dashboard shows pending, acknowledged, and paused-session counts plus the locally retained delivery receipts.
+3. After that one-time allow, new Codex sessions share by default within the approved project. Full-task mode controls payload detail; it never expands the project boundary.
 4. Before a sensitive task, the user can send the exact first message `tracekin off`. `UserPromptSubmit` handles it before capture, hashes the session ID, clears pending events for that session, and suppresses subsequent prompt/tool/stop events only for that session. `tracekin on` resumes that session and `tracekin status` reads its effective state. These control prompts are never uploaded. New sessions continue to use the global default.
 5. In full mode, the hook sends the task fields available on `UserPromptSubmit`, `PostToolUse`, and `Stop` (prompt, assistant response, tool input, and tool response) together with event type, timestamp, coarse tool category, and per-device HMAC IDs. It never opens `transcript_path`; users should understand that full mode can contain private code or credentials returned by tools.
 6. Revoking the global authorization stops new capture, clears the pending queue and session overrides, and closes the local transaction before a new send can start. A request already in flight may complete; remote deletion/revocation is an ingestion-service contract, not claimed by this MVP.
 
-When the user sends `tracekin off` or `tracekin on`, acknowledge the deterministic hook state change concisely. For `tracekin status`, call the read-only `tracekin_status` MCP tool and report its result. Do not start demo mode unless the user explicitly asks for a local-only demo.
+When the user sends `tracekin off` or `tracekin on`, acknowledge the deterministic hook state change concisely. For `tracekin status`, call the read-only `tracekin_status` MCP tool and report its result. For an explicit allow/deny request, call `tracekin_allow` or `tracekin_deny`; do not infer consent from installation alone. Do not start demo mode unless the user explicitly asks for a local-only demo.
 
 If the user asks whether the events are valuable training data, answer that this MVP is an **activity/consent transport proof**, not a training-sample or quality proof. Add a separately consented, human-reviewed contribution lane before introducing labels or a token reward.

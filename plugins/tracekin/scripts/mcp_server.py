@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only Tracekin MCP surface. Consent stays in the panel; session commands run in hooks."""
+"""Tracekin MCP surface: read status and make an explicit allow/deny choice."""
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import Store, home_dir
+from tracekin import InputError, PLUGIN_VERSION, Store, home_dir
 
 
 TOOLS = [{
@@ -17,12 +18,20 @@ TOOLS = [{
     "name": "tracekin_data_contract",
     "description": "Read the current Tracekin event contract and privacy mode without reading task content.",
     "inputSchema": {"type": "object", "additionalProperties": False},
+}, {
+    "name": "tracekin_allow",
+    "description": "Explicitly allow sharing for the current Codex project. The project and Tracekin Cloud destination are filled automatically; this changes local consent and enables project-scoped delivery.",
+    "inputSchema": {"type": "object", "additionalProperties": False},
+}, {
+    "name": "tracekin_deny",
+    "description": "Explicitly deny or revoke Tracekin sharing. Stops new capture, clears pending local events, and leaves already acknowledged receipts visible.",
+    "inputSchema": {"type": "object", "additionalProperties": False},
 }]
 
 
 def empty_status():
     return {
-        "config": {"consent_granted": False, "sharing_enabled": False, "share_all": False, "projects": [], "endpoint": "", "use_existing_pet": True, "pet": {"name": "Trace", "concept": ""}, "demo": False},
+        "config": {"consent_granted": False, "consent_decision": "pending", "sharing_enabled": False, "share_all": False, "projects": [], "active_project": "", "endpoint": "", "use_existing_pet": True, "pet": {"name": "Trace", "concept": ""}, "demo": False},
         "counts": {"pending": 0, "sent": 0},
         "events": [],
         "session_controls": {"paused_sessions": 0, "commands": ["tracekin off", "tracekin on", "tracekin status"]},
@@ -31,6 +40,31 @@ def empty_status():
         "proof_status": "activity_only_not_training_proof",
         "initialized": False,
     }
+
+
+def current_project(store):
+    candidates = [os.environ.get("TRACEKIN_PROJECT"), os.getcwd(), store.snapshot()["config"].get("active_project")]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            return store.validate_project(candidate)
+        except InputError:
+            continue
+    raise InputError("没有检测到具体项目目录，请从项目目录启动当前 Codex 会话")
+
+
+def call_tool(name):
+    store = Store(home_dir())
+    if name == "tracekin_status":
+        return store.snapshot()
+    if name == "tracekin_data_contract":
+        return {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "scope_policy": "current_project_only", "transcript_policy": "never opened implicitly", "consent_control": "panel_or_explicit_mcp_allow_deny", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
+    if name == "tracekin_allow":
+        return store.allow_active_project(current_project(store))
+    if name == "tracekin_deny":
+        return store.deny_sharing()
+    raise InputError("unknown tool")
 
 
 def result(request_id, value):
@@ -43,23 +77,18 @@ def main():
             req = json.loads(line)
             method, request_id = req.get("method"), req.get("id")
             if method == "initialize":
-                out = result(request_id, {"protocolVersion": req.get("params", {}).get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}}, "serverInfo": {"name": "tracekin", "version": "0.2.2"}})
+                out = result(request_id, {"protocolVersion": req.get("params", {}).get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}}, "serverInfo": {"name": "tracekin", "version": PLUGIN_VERSION}})
             elif method == "tools/list":
                 out = result(request_id, {"tools": TOOLS})
             elif method == "tools/call":
                 name = req.get("params", {}).get("name")
-                if name == "tracekin_status":
-                    if (home_dir() / "tracekin.sqlite3").exists():
-                        try:
-                            payload = Store(home_dir(), create=False).snapshot()
-                        except (OSError, TypeError, ValueError, sqlite3.Error):
-                            payload = empty_status()
-                    else:
+                try:
+                    if name == "tracekin_status" and not (home_dir() / "tracekin.sqlite3").exists():
                         payload = empty_status()
-                elif name == "tracekin_data_contract":
-                    payload = {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "scope_policy": "configured_projects_only", "transcript_policy": "never opened implicitly", "consent_control": "one_time_client_panel_opt_in", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
-                else:
-                    out = result(request_id, {"isError": True, "content": [{"type": "text", "text": "unknown tool"}]})
+                    else:
+                        payload = call_tool(name)
+                except (OSError, TypeError, ValueError, InputError, sqlite3.Error) as error:
+                    out = result(request_id, {"isError": True, "content": [{"type": "text", "text": str(error)}]})
                     print(json.dumps(out, ensure_ascii=False), flush=True); continue
                 out = result(request_id, {"content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}], "structuredContent": payload})
             elif method in {"notifications/initialized", "notifications/cancelled"}:

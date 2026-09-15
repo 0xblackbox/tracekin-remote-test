@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
 """In-process loopback receiver test; disposable demo data only."""
+import json
 import tempfile
+import urllib.request
 from pathlib import Path
-import shutil
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
-from serve import App
+from serve import App, handler_for
 from tracekin import send_https
+from http.server import ThreadingHTTPServer
 
 with tempfile.TemporaryDirectory(prefix="tracekin-integration-") as d:
     project = Path(d) / "project"; project.mkdir()
     app = App(Path(d) / "state", demo=True, project=project)
     assert app.snapshot()["config"]["projects"] == [str(project.resolve())]
-    app.store.configure({"projects": [str(project)], "share_all": True})
     off = app.snapshot(); assert not off["config"]["sharing_enabled"]
-    app.store.configure({"consent_granted": True, "sharing_enabled": True})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(app))
+    server_thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    request = urllib.request.Request(base + "/api/consent", data=json.dumps({"decision": "allow"}).encode(), headers={"Host": f"127.0.0.1:{server.server_port}", "Origin": base, "X-Tracekin-Token": app.token, "Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=3) as response:
+        api_state = json.loads(response.read())
+    assert api_state["current_project_authorized"] is True
+    request = urllib.request.Request(base + "/api/consent", data=json.dumps({"decision": "deny"}).encode(), headers={"Host": f"127.0.0.1:{server.server_port}", "Origin": base, "X-Tracekin-Token": app.token, "Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=3) as response:
+        api_state = json.loads(response.read())
+    assert api_state["config"]["consent_decision"] == "denied" and not api_state["config"]["sharing_enabled"]
+    server.shutdown(); server.server_close()
+    app.decide("allow")
+    assert app.snapshot()["current_project_authorized"]
     app.sample()
     queued = app.snapshot()["counts"]
     assert queued == {"pending": 2, "sent": 0}

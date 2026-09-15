@@ -1,5 +1,5 @@
 {
-  "description": "Tracekin shares after one explicit local-panel opt-in. Type 'tracekin off' before a sensitive task to pause only that Codex session; control prompts are not uploaded.",
+  "description": "Tracekin detects the current project, then shares only after an explicit panel or MCP allow choice. Type 'tracekin off' before a sensitive task to pause only that Codex session; control prompts are not uploaded.",
   "hooks": {
     "SessionStart": [
       {
