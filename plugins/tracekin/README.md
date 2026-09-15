@@ -21,11 +21,11 @@ Tracekin 可以作为 Codex 插件直接安装，并内置一个只读 MCP 服�
 
 ## 无感体验
 
-首次打开正式面板只出现一次「同意并开始共享」或「暂不共享」。同意后，新会话默认共享。敏感任务开始前把 `tracekin off` 作为该会话第一条消息；该命令本身不会上传，且只暂停当前会话。使用 `tracekin on` 恢复，使用 `tracekin status` 查询。项目或接收地址变化时才重新请求授权。
+首次打开正式面板只出现一次「同意并开始共享」或「暂不共享」。同意后，新会话在已配置项目目录内默认共享；全量模式只改变发送字段，不会扩大项目边界。敏感任务开始前把 `tracekin off` 作为该会话第一条消息；该命令本身不会上传，且只暂停当前会话。使用 `tracekin on` 恢复，使用 `tracekin status` 查询。项目或接收地址变化时才重新请求授权。
 
 ## What this MVP proves
 
-- one-time explicit consent inside the loopback companion, followed by default sharing for new sessions;
+- one-time explicit consent inside the loopback companion, followed by project-scoped default sharing for new sessions;
 - hooks fail closed and do not read stdin/transcripts while off;
 - payload redaction, HMAC pseudonymous IDs, deduplication, bounded queue and visible receipts;
 - per-session off/on/status commands are applied before capture and never uploaded;
@@ -70,13 +70,15 @@ It does **not** claim that activity metadata is a useful training corpus, that a
 python3 --version
 ```
 
-在 Codex CLI 中添加这个本地 marketplace（压缩包内已包含 `.agents/plugins/marketplace.json`；路径替换为解压目录）：
+在 Codex CLI 中添加 Git marketplace：
 
 ```bash
-codex plugin marketplace add /path/to/tracekin-remote-test-bundle
+codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git
 codex plugin add tracekin@tracekin-remote-test
-codex plugin list
+codex plugin list --json
 ```
+
+如果使用离线压缩包，把第一条替换为解压目录路径即可。
 
 然后重启 Codex Desktop。在 Plugins Directory 中确认 Tracekin 已启用；打开 Hooks 审核页，逐条审阅并信任 Tracekin 的 bundled hooks，完成一次 hooks 信任确认。
 

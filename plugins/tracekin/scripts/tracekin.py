@@ -107,7 +107,16 @@ class Store:
             return False
         try:
             with self.connect() as c:
-                return self.read_config(c).get("sharing_enabled") is True
+                cfg = self.read_config(c)
+                if cfg.get("sharing_enabled") is not True or cfg.get("consent_granted") is not True:
+                    return False
+                if not cfg.get("projects") or not cfg.get("endpoint"):
+                    return False
+                if cfg.get("demo"):
+                    parsed = urllib.parse.urlsplit(cfg["endpoint"])
+                    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+                valid_endpoint(cfg["endpoint"])
+                return True
         except (sqlite3.Error, ValueError, TypeError):
             return False
 
@@ -178,13 +187,13 @@ class Store:
                 cfg["share_all"] = changes["share_all"]
             # Changing scope or destination requires a fresh explicit opt-in.
             scope_changed = old_scope != (cfg["projects"], cfg["endpoint"], cfg.get("endpoint_token", ""))
-            if scope_changed and not (changes.get("consent_granted") is True and changes.get("share_all") is True and changes.get("sharing_enabled") is True):
+            if scope_changed and not (changes.get("consent_granted") is True and changes.get("sharing_enabled") is True):
                 cfg["sharing_enabled"] = False
                 cfg["consent_granted"] = False
             if cfg["sharing_enabled"] and not cfg.get("consent_granted"):
                 raise InputError("请先在本地面板完成一次共享授权")
-            if cfg["sharing_enabled"] and ((not cfg["share_all"] and not cfg["projects"]) or not cfg["endpoint"]):
-                raise InputError("先配置接收地址，再主动勾选共享")
+            if cfg["sharing_enabled"] and (not cfg["projects"] or not cfg["endpoint"]):
+                raise InputError("先配置项目目录和接收地址，再开启共享")
             if cfg["sharing_enabled"]:
                 valid_endpoint(cfg["endpoint"], self.demo_endpoint)
             if not cfg["sharing_enabled"] or scope_changed:
@@ -238,7 +247,7 @@ class Store:
             command = self.parse_session_command(event)
             if command:
                 return self.apply_session_command(c, cfg, event["session_id"], command)
-            if not cfg["sharing_enabled"]:
+            if not cfg["sharing_enabled"] or not cfg.get("consent_granted"):
                 return "disabled"
             session_hash = self.digest(cfg, "session", event["session_id"])
             row = c.execute("SELECT enabled FROM session_overrides WHERE session_id=?", (session_hash,)).fetchone()
@@ -251,7 +260,10 @@ class Store:
                 return "invalid"
             cwd = Path(event["cwd"]).resolve()
             matched = [p for p in cfg["projects"] if cwd == Path(p) or Path(p) in cwd.parents]
-            if not cfg.get("share_all") and not matched:
+            # Full-task mode controls payload detail, never project scope. A
+            # configured project list is always required so the quick-start
+            # consent cannot silently capture unrelated working directories.
+            if not matched:
                 return "excluded"
             call_id = event.get("tool_use_id") if kind == "PostToolUse" else ("prompt" if kind == "UserPromptSubmit" else "turn-end")
             if not isinstance(call_id, str) or not 1 <= len(call_id) <= 4096:
@@ -259,7 +271,7 @@ class Store:
             event_id = self.digest(cfg, event["session_id"], event["turn_id"], kind, call_id)
             payload = {
                 "schema": SCHEMA, "id": event_id,
-                "project_id": self.digest(cfg, "project", max(matched, key=len) if matched else "all-projects"),
+                "project_id": self.digest(cfg, "project", max(matched, key=len)),
                 "session_id": session_hash,
                 "turn_id": self.digest(cfg, "turn", event["turn_id"]),
                 "event": kind, "observed_at": int(time.time()),

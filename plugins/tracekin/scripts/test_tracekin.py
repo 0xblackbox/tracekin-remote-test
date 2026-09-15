@@ -58,12 +58,22 @@ def main():
         store.clear_local()
         assert store.snapshot()["counts"] == {"pending": 0, "sent": 0} and not store.enabled() and not store.snapshot()["config"]["consent_granted"]
         # Full-task mode is a deliberate second consent branch: raw hook fields are retained,
-        # including a synthetic sentinel, and it is global rather than project-scoped.
-        assert store.configure({"consent_granted": True, "share_all": True, "sharing_enabled": True})["config"]["sharing_enabled"] is True
-        full = dict(event, cwd=str(Path(d) / "outside"), tool_input={"command": "FULL_PRIVATE_COMMAND"}, tool_response="FULL_PRIVATE_OUTPUT")
+        # including a synthetic sentinel, while the project boundary remains enforced.
+        child = root / "child"; child.mkdir()
+        sibling = Path(d) / "sibling"; sibling.mkdir()
+        assert store.configure({"projects": [str(root)], "consent_granted": True, "share_all": True, "sharing_enabled": True})["config"]["sharing_enabled"] is True
+        full = dict(event, cwd=str(child), tool_input={"command": "FULL_PRIVATE_COMMAND"}, tool_response="FULL_PRIVATE_OUTPUT")
         assert store.record(full) == "queued"
         raw_full = store.db.read_bytes()
         assert b"FULL_PRIVATE_COMMAND" in raw_full and b"FULL_PRIVATE_OUTPUT" in raw_full
+        sibling_event = dict(full, cwd=str(sibling), turn_id="sibling-turn", tool_use_id="sibling-call")
+        assert store.record(sibling_event) == "excluded"
+        assert store.snapshot()["counts"] == {"pending": 1, "sent": 0}
+        try:
+            store.configure({"projects": [], "consent_granted": True, "share_all": True, "sharing_enabled": True})
+            raise AssertionError("sharing enabled without a project scope")
+        except ValueError:
+            pass
         store.clear_local()
     print("TRACEKIN_CLIENT_TESTS_OK")
 

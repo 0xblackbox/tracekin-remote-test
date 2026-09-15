@@ -5,12 +5,12 @@
 ## 快速安装
 
 ```bash
-codex plugin marketplace add /path/to/tracekin-remote-test-bundle
+codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git
 codex plugin add tracekin@tracekin-remote-test
-codex plugin list
+codex plugin list --json
 ```
 
-重启 Codex Desktop，在 Plugins Directory 启用 Tracekin，并在 Hooks 审核页逐条审阅、信任 bundled hooks。然后新建会话，按 README 配置项目目录、GCP HTTPS 地址和令牌，先做 Hooks 冒烟测试，再做 MCP 只读查询。
+这些命令在 macOS 终端执行；本地压缩包测试时，第一条也可以替换为解压目录路径。重启 Codex Desktop，在 Plugins Directory 启用 Tracekin，并在 Hooks 审核页逐条审阅、信任 bundled hooks。然后新建会话，按 README 配置项目目录、GCP HTTPS 地址和令牌，先做 Hooks 冒烟测试，再做 MCP 只读查询。
 
 ## 已安装旧版时升级
 

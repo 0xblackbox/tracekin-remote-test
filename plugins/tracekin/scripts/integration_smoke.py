@@ -12,7 +12,7 @@ from tracekin import send_https
 with tempfile.TemporaryDirectory(prefix="tracekin-integration-") as d:
     project = Path(d) / "project"; project.mkdir()
     app = App(Path(d) / "state", demo=True, project=project)
-    app.store.configure({"projects": [], "share_all": True})
+    app.store.configure({"projects": [str(project)], "share_all": True})
     off = app.snapshot(); assert not off["config"]["sharing_enabled"]
     app.store.configure({"consent_granted": True, "sharing_enabled": True})
     app.sample()

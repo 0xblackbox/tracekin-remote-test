@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read-only Tracekin MCP surface. Consent stays in the panel; session commands run in hooks."""
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -19,6 +20,19 @@ TOOLS = [{
 }]
 
 
+def empty_status():
+    return {
+        "config": {"consent_granted": False, "sharing_enabled": False, "share_all": False, "projects": [], "endpoint": "", "use_existing_pet": True, "pet": {"name": "Trace", "concept": ""}, "demo": False},
+        "counts": {"pending": 0, "sent": 0},
+        "events": [],
+        "session_controls": {"paused_sessions": 0, "commands": ["tracekin off", "tracekin on", "tracekin status"]},
+        "schema": "tracekin.activity.v1",
+        "native_pet": "configured_in_codex",
+        "proof_status": "activity_only_not_training_proof",
+        "initialized": False,
+    }
+
+
 def result(request_id, value):
     return {"jsonrpc": "2.0", "id": request_id, "result": value}
 
@@ -35,9 +49,15 @@ def main():
             elif method == "tools/call":
                 name = req.get("params", {}).get("name")
                 if name == "tracekin_status":
-                    payload = Store(home_dir(), create=False).snapshot() if (home_dir() / "tracekin.sqlite3").exists() else {"config": {"sharing_enabled": False}, "counts": {"pending": 0, "sent": 0}, "schema": "tracekin.activity.v1"}
+                    if (home_dir() / "tracekin.sqlite3").exists():
+                        try:
+                            payload = Store(home_dir(), create=False).snapshot()
+                        except (OSError, TypeError, ValueError, sqlite3.Error):
+                            payload = empty_status()
+                    else:
+                        payload = empty_status()
                 elif name == "tracekin_data_contract":
-                    payload = {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "transcript_policy": "never opened implicitly", "consent_control": "one_time_client_panel_opt_in", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
+                    payload = {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "scope_policy": "configured_projects_only", "transcript_policy": "never opened implicitly", "consent_control": "one_time_client_panel_opt_in", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
                 else:
                     out = result(request_id, {"isError": True, "content": [{"type": "text", "text": "unknown tool"}]})
                     print(json.dumps(out, ensure_ascii=False), flush=True); continue

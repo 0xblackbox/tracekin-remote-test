@@ -10,8 +10,10 @@ async function api(path, data) {
 function render(data, initial = false) {
   state = data;
   const c = data.config;
+  const projects = Array.isArray(c.projects) ? c.projects : [];
+  const scopeReady = projects.length > 0;
   $('mode').textContent = c.demo ? '仅本机演示 · 零外发' : '本机服务 · Codex 插件';
-  $('sharing-status').textContent = c.sharing_enabled ? (c.demo ? '全部任务 · 本机演示' : '默认共享 · 已开启') : (c.consent_granted ? '全局共享已暂停' : '等待一次授权');
+  $('sharing-status').textContent = c.sharing_enabled && scopeReady ? (c.demo ? '全部任务 · 本机演示' : '默认共享 · 已开启') : c.consent_granted && !scopeReady ? '需要确认项目' : c.consent_granted ? '全局共享已暂停' : '等待一次授权';
   $('mode-explainer').textContent = c.demo ? '这一页正在演示客户端授权流程。接收器也在本机，不会向平台发送数据。' : '首次明确同意后，新会话默认共享；输入 tracekin off 只暂停当前会话。';
   $('endpoint-note').textContent = c.demo ? '当前是本机测试接收器。切换到正式模式并配置 HTTPS 服务后，才会产生外部共享。' : '更换范围、地址或令牌后，需要重新进行一次授权。';
   const useExistingPet = Boolean(c.use_existing_pet);
@@ -22,7 +24,9 @@ function render(data, initial = false) {
   $('sharing').checked = c.sharing_enabled;
   $('sharing').disabled = busy || !c.endpoint;
   $('sharing-control').hidden = !c.demo;
-  $('quick-start').hidden = Boolean(c.consent_granted) || busy;
+  // Show the action again when an older install has consent but no bound
+  // project, or when global sharing was paused. This avoids a dead-end state.
+  $('quick-start').hidden = Boolean(c.consent_granted && c.sharing_enabled && scopeReady) || busy;
   $('quick-share').disabled = busy || !c.endpoint;
   $('advanced-scope').open = Boolean(!c.endpoint && !c.demo);
   $('demo-event').hidden = !c.demo;
@@ -44,7 +48,7 @@ function render(data, initial = false) {
   }));
   if (initial) {
     $('pet-name').value = c.pet.name; $('pet-concept').value = c.pet.concept;
-    $('projects').value = c.projects.join('\n') || data.default_project;
+    $('projects').value = projects.join('\n') || data.default_project;
     $('endpoint').value = c.endpoint; $('endpoint').readOnly = c.demo;
   }
 }
@@ -57,10 +61,13 @@ async function act(path, data, message) {
 }
 $('scope-form').onsubmit = async (e) => {
   e.preventDefault();
-  const next = await act('/api/config', {projects: $('projects').value.split('\n').map(x => x.trim()).filter(Boolean), endpoint: $('endpoint').value.trim(), endpoint_token: $('endpoint-token').value}, '范围已保存。请完成一次明确授权。');
-  if (next) { $('projects').value = next.config.projects.join('\n'); $('endpoint').value = next.config.endpoint; $('endpoint-token').value = ''; }
+  const payload = {projects: $('projects').value.split('\n').map(x => x.trim()).filter(Boolean), endpoint: $('endpoint').value.trim()};
+  if ($('clear-token').checked) payload.endpoint_token = '';
+  else if ($('endpoint-token').value) payload.endpoint_token = $('endpoint-token').value;
+  const next = await act('/api/config', payload, '范围已保存；如状态提示等待授权，请点击允许共享。');
+  if (next) { $('projects').value = next.config.projects.join('\n'); $('endpoint').value = next.config.endpoint; $('endpoint-token').value = ''; $('clear-token').checked = false; }
 };
-$('quick-share').onclick = () => act('/api/config', {projects: [], endpoint: state.config.endpoint, consent_granted: true, sharing_enabled: true, share_all: true}, '授权已记录。新会话默认共享；敏感会话请先输入 tracekin off。');
+$('quick-share').onclick = () => act('/api/config', {projects: [state.default_project], endpoint: state.config.endpoint, consent_granted: true, sharing_enabled: true, share_all: true}, '授权已记录。当前项目的新会话默认共享；敏感会话请先输入 tracekin off。');
 $('quick-local').onclick = () => act('/api/config', {consent_granted: false, sharing_enabled: false, share_all: false}, '当前保持本地模式，宠物仍会照常陪伴。');
 $('sharing').onchange = () => act('/api/config', {consent_granted: $('sharing').checked, sharing_enabled: $('sharing').checked}, $('sharing').checked ? '演示共享已开启。' : '演示共享已关闭。');
 $('use-existing-pet').onchange = () => act('/api/config', {use_existing_pet: $('use-existing-pet').checked}, $('use-existing-pet').checked ? '已切换为沿用当前 Codex 宠物。' : '已切换为自定义宠物创建流程。');
