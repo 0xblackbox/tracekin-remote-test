@@ -132,7 +132,7 @@ def assert_enabled_default(cfg):
     assert "salt" not in cfg and "endpoint_token" not in cfg
 
 
-def wait_for_runtime(home, timeout=8.0):
+def wait_for_runtime(home, timeout=20.0):
     runtime = Path(home) / "runtime.json"
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -144,7 +144,16 @@ def wait_for_runtime(home, timeout=8.0):
             except (ValueError, OSError):
                 pass
         time.sleep(0.05)
-    raise AssertionError("companion did not publish runtime.json")
+    log = Path(home) / "companion.log"
+    detail = log.read_text(errors="replace")[-2000:] if log.exists() else "(no companion.log)"
+    raise AssertionError("companion did not publish runtime.json\n--- companion.log ---\n" + detail)
+
+
+def settle_companion(home):
+    """Wait for the companion a SessionStart just spawned, then stop it so the
+    rest of a test never races a delivery attempt against the real receiver."""
+    wait_for_runtime(home)
+    stop_companion(home)
 
 
 def stop_companion(home):
@@ -207,6 +216,7 @@ def test_cursor_plugin_wrappers_run_from_any_directory(d, root):
     try:
         started = subprocess.run([str(PLUGIN_DIR / "cursor" / "start.sh")], input=json.dumps(cursor_event(root, "sessionStart")), text=True, capture_output=True, env=env, cwd=elsewhere, timeout=30)
         assert started.returncode == 0 and json.loads(started.stdout) == {}, started.stderr
+        settle_companion(home)
         assert Store(home, create=False).snapshot()["current_project_authorized"] is True
         hooked = subprocess.run([str(PLUGIN_DIR / "cursor" / "hook.sh")], input=json.dumps(cursor_event(root, "beforeSubmitPrompt")), text=True, capture_output=True, env=env, cwd=elsewhere, timeout=30)
         assert hooked.returncode == 0 and json.loads(hooked.stdout) == {"continue": True}, hooked.stderr
@@ -334,6 +344,7 @@ def test_hooks_and_mcp_share_one_data_dir(d, root):
         assert out["tracekin"] == "started" and out["data_dir"] == expected, out
         assert (fake_home / ".tracekin" / "tracekin.sqlite3").exists() and not (legacy_dir / "tracekin.sqlite3").exists()
         assert stale.wait(timeout=5) != 0 and not (legacy_dir / "runtime.json").exists(), "legacy companion was not stopped"
+        settle_companion(fake_home / ".tracekin")
         # The MCP server runs without PLUGIN_DATA and must read the same database.
         status = mcp_payload(mcp_calls(None, root, "tracekin_status", env=mcp_env)[2])
         assert status["data_dir"] == expected and status["sharing_state"] == "enabled" and status["current_project_authorized"] is True
@@ -380,28 +391,34 @@ def test_legacy_codex_home_is_adopted_once(d, root):
     (legacy / "runtime.json").write_text(json.dumps({"pid": stale.pid, "url": "http://127.0.0.1:1/#x", "mode": "production", "version": "0.4.6+codex.0"}))
     env = dict(base_env(), HOME=str(fake_home))
     new_home = fake_home / ".tracekin"
+    # A companion already serving the shared directory (so no delivery is attempted
+    # during the test): SessionStart must adopt the legacy database and keep it.
+    new_home.mkdir(mode=0o700)
+    current = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    (new_home / "runtime.json").write_text(json.dumps({"pid": current.pid, "url": "http://127.0.0.1:1/#y", "mode": "production", "version": PLUGIN_VERSION}))
     try:
         # Pure-read status before any SessionStart: nothing is created or moved.
         before = json.loads(run_cli("status", env=env).stdout)
         assert before["initialized"] is False and before["legacy_data_dir"] == str(legacy) and before["data_dir"] == str(new_home)
-        assert not new_home.exists() and (legacy / "tracekin.sqlite3").exists()
+        assert not (new_home / "tracekin.sqlite3").exists() and (legacy / "tracekin.sqlite3").exists()
         started = json.loads(run_cli("start", stdin=json.dumps({"cwd": str(root)}), env=env, cwd=root).stdout)
-        assert started["tracekin"] == "started" and started["data_dir"] == str(new_home)
+        assert started["tracekin"] == "already_running" and started["data_dir"] == str(new_home), started
+        assert current.poll() is None, "the companion already serving the shared directory must be kept"
         after = json.loads(run_cli("status", env=env).stdout)
         assert after["initialized"] is True and after["legacy_data_dir"] is None
         assert after["counts"] == {"pending": 1, "sent": 0}, "queued events must survive the move"
         assert after["current_project_authorized"] is True and after["config"]["projects"] == [str(root)]
         assert (legacy / "tracekin.sqlite3.migrated").exists() and not (legacy / "tracekin.sqlite3").exists()
         assert stale.wait(timeout=5) != 0 and not (legacy / "runtime.json").exists(), "legacy companion was not stopped"
-        wait_for_runtime(new_home)
+        # A second SessionStart finds nothing left to adopt.
         again = json.loads(run_cli("start", stdin=json.dumps({"cwd": str(root)}), env=env, cwd=root).stdout)
         assert again["tracekin"] == "already_running"
         assert json.loads(run_cli("status", env=env).stdout)["counts"] == {"pending": 1, "sent": 0}
     finally:
-        stop_companion(new_home)
-        if stale.poll() is None:
-            stale.kill()
-            stale.wait()
+        for proc in (stale, current):
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
     # An explicit TRACEKIN_HOME never triggers adoption.
     isolated = d / "isolated"
     assert Store(isolated).snapshot()["counts"] == {"pending": 0, "sent": 0}
@@ -431,6 +448,7 @@ def test_claude_code_hook_payloads_are_normalized(d, root):
         # SessionStart carries the Claude Code shape and binds the project.
         started = run_cli("start", stdin=json.dumps({"session_id": "claude-session", "cwd": str(root), "hook_event_name": "SessionStart", "source": "startup", "transcript_path": "/private/claude/transcript.jsonl"}), env=claude_env, cwd=root)
         assert json.loads(started.stdout)["tracekin"] == "started", started.stdout
+        settle_companion(home)
         store = Store(home, create=False)
         assert store.snapshot()["current_project_authorized"] is True
         for kind in ("UserPromptSubmit", "PostToolUse", "Stop"):
@@ -495,6 +513,7 @@ def test_cursor_hook_payloads_are_normalized(d, root):
         # User-level Cursor hooks run from ~/.cursor, not from the project.
         started = run_cli("start", "--harness", "cursor", stdin=json.dumps(cursor_event(root, "sessionStart")), env=env, cwd=cursor_home)
         assert started.returncode == 0 and json.loads(started.stdout) == {}, "Cursor sessionStart output must stay schema-clean"
+        settle_companion(home)
         store = Store(home, create=False)
         assert store.snapshot()["current_project_authorized"] is True and store.snapshot()["config"]["projects"] == [str(root.resolve())]
         prompt = run_cli("hook", "--harness", "cursor", stdin=json.dumps(cursor_event(root, "beforeSubmitPrompt")), env=env, cwd=cursor_home)

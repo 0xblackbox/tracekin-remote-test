@@ -905,10 +905,21 @@ def start_companion(home, project=None):
             runtime.unlink(missing_ok=True)
     root = Path(os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parents[1])
     Path(home).mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(os.devnull, "w") as sink:
+    # The companion's own output goes to a small log next to the database so a
+    # companion that fails to come up can be diagnosed (0o600, bounded size).
+    log_path = Path(home) / "companion.log"
+    try:
+        if log_path.exists() and log_path.stat().st_size > 1_000_000:
+            log_path.unlink()
+    except OSError:
+        pass
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as sink:
         command = [sys.executable, str(root / "scripts" / "serve.py"), "--home", str(home)]
         if project:
             command += ["--project", str(project)]
+        sink.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] start {PLUGIN_VERSION} project={project or '-'}\n")
+        sink.flush()
         subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=sink, stderr=sink, start_new_session=True, close_fds=True)
     return "started"
 

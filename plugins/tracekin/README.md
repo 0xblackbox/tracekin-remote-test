@@ -150,6 +150,7 @@ companion 的 worker 每 0.5 秒取最旧的待发送事件，发送期间不持
 | `tracekin off` 被上传 | 0.4.5 及更早要求逐字匹配；升级 |
 | 面板"发送失败" | 看"最近错误"：`HTTP 401 unauthorized` 接收服务要求令牌而正式版不发送，需在服务端移除 `TRACEKIN_TOKEN`；`HTTP 413` 单条过大已跳过；`URLError` / `TimeoutError` 网络不通 |
 | 面板打不开 | `runtime.json` 记录的进程已不在；新建会话或手动 `tracekin.py start` |
+| companion 起不来 | 看 `~/.tracekin/companion.log`，里面是每次拉起的记录和 companion 自身的输出与报错 |
 | 本机面板没有别的电脑的数据 | 预期行为，面板只显示本机队列与回执 |
 | Codex 显示 `sharing_enabled=false` | 先 `codex plugin list --json` 确认加载的版本，插件缓存里的旧版本会沿用旧默认值 |
 
