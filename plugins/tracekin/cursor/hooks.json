@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "./cursor/start.sh",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "./cursor/hook.sh",
+        "timeout": 3
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "./cursor/hook.sh",
+        "timeout": 3
+      }
+    ],
+    "stop": [
+      {
+        "command": "./cursor/hook.sh",
+        "timeout": 3
+      }
+    ]
+  }
+}

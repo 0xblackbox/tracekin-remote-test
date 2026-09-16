@@ -42,6 +42,8 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
+Version `0.6.0` adds **Cursor**. Cursor has no plugin manifest, so `python3 scripts/tracekin.py install-cursor` registers two argument-free wrapper scripts under `~/.cursor/tracekin/` in `~/.cursor/hooks.json` (`sessionStart`, `beforeSubmitPrompt`, `postToolUse`, `stop`) and the status server in `~/.cursor/mcp.json`, keeping every other hook and server; `uninstall-cursor` removes only those entries. The adapter maps `conversation_id` / `generation_id` to the session and turn ids, takes the project from `workspace_roots` (user-level Cursor hooks run from `~/.cursor`, not the project), reads `tool_output`, answers `beforeSubmitPrompt` with `{"continue": true}` so a control prompt is withheld without blocking it, and labels events `source: cursor_hook`. Cursor's `stop` carries no assistant message, so `task_data` is empty for stop events. Tool categories now fall back to keyword matching for tool names any harness may introduce.
+
 Version `0.5.1` keeps the companion alive when a session starts outside a project directory (for example `claude` launched from `~`): `SessionStart` still refuses to bind that directory, and the companion now falls back to the scope already recorded instead of exiting. It also adds an opt-in, keys-only hook trace for diagnosing a harness: create `~/.tracekin/debug-hooks` and every hook invocation appends one line to `~/.tracekin/hook-debug.log` with the event type, detected harness, sorted field names and the record outcome, never prompts, tool input/output, paths or identifiers; delete the marker to stop. Verified on macOS with `claude --plugin-dir` in both interactive and `-p` sessions: the plugin loads, the MCP server starts, `UserPromptSubmit` / `PostToolUse` / `Stop` fire and deliver, and the legacy `~/.codex/tracekin` is adopted. Claude Code 2.1.273 actually sends `tool_response` on `PostToolUse` and `last_assistant_message` on `Stop`; the adapter accepts both the documented and the observed names.
 
 Version `0.5.0` runs under **Claude Code** as well as Codex. One plugin directory carries both manifests (`.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`), one shared `hooks/hooks.json` (commands use `${CLAUDE_PLUGIN_ROOT}`, which Codex also exports), and one MCP config per harness (`codex/mcp.json`, `.mcp.json`). The hook script normalizes Claude Code payloads (`prompt_id` → turn id, `tool_output` → tool response, Stop without an assistant message) and labels events `source: claude_code_hook`. The data directory is now harness-neutral: `~/.tracekin` on every surface, adopted automatically from `~/.codex/tracekin` by the first `SessionStart` after the upgrade (the old file is renamed `tracekin.sqlite3.migrated` and the old companion is stopped). Version strings use `+build.<stamp>` from now on.
@@ -83,6 +85,32 @@ claude plugin install tracekin@tracekin-remote-test
 For a local checkout use `claude plugin marketplace add /path/to/tracekin-remote-test`, or load it for one session without installing: `claude --plugin-dir /path/to/tracekin-remote-test/plugins/tracekin`. Validate before publishing with `claude plugin validate plugins/tracekin` and `claude plugin validate .`.
 
 Differences from Codex: Claude Code's `Stop` hook carries no assistant message, so `task_data` is empty for stop events (the transcript file is never read); the per-turn id comes from `prompt_id`; tool categories cover Claude Code's built-in tools (`Read`/`Glob`/`Grep` → `read`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit` → `edit`, `WebFetch`/`WebSearch` → `web`, `Task`/`Agent` → `agent`). Plugin hooks do not fire in `claude -p` print mode. The status tool appears as `mcp__plugin_tracekin_tracekin__tracekin_status`.
+
+## Install into Cursor
+
+Two ways; both use the same checkout and the same `~/.tracekin` data directory.
+
+**A. User-level hooks (verified by the test suite).** Registers wrapper scripts in `~/.cursor/hooks.json` and the status server in `~/.cursor/mcp.json`, keeping everything else in those files:
+
+```bash
+git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor
+```
+
+Remove with `python3 …/tracekin.py uninstall-cursor`. The installer pins the interpreter it was run with, so run it with the `python3` you want Cursor to use.
+
+**B. Cursor plugin directory (manifest per the Cursor plugin reference, not yet exercised in a live Cursor).** The plugin ships `.cursor-plugin/plugin.json` pointing at `cursor/hooks.json` (Cursor event names, plugin-relative wrapper scripts) and `cursor/mcp.json` (`${CURSOR_PLUGIN_ROOT}`):
+
+```bash
+mkdir -p ~/.cursor/plugins/local
+ln -s ~/tracekin-remote-test/plugins/tracekin ~/.cursor/plugins/local/tracekin
+```
+
+Then run "Developer: Reload Window". If your Cursor build does not pick it up, use A.
+
+Either way, restart Cursor and start an Agent chat in a project: `sessionStart` binds the workspace root, `beforeSubmitPrompt` / `postToolUse` / `stop` feed the shared queue, and the `tracekin` MCP server exposes `tracekin_status`. Upgrade with `git pull` in the checkout; registered paths stay valid.
+
+Differences from Codex and Claude Code: Cursor's `stop` hook has no assistant text (`task_data` is empty for stop events); `tracekin off` typed as an Agent prompt pauses the current conversation (`conversation_id`), and each new conversation shares by default; cloud/background agents load only project-level hooks, so a user-level registration does not follow them.
 
 ## 跨电脑完整 Hooks/MCP 测试
 
@@ -164,5 +192,5 @@ Tracekin remote smoke test: hooks
 - `tracekin_status` 显示 `sharing_enabled=false`：先用 `codex plugin list --json` 确认 Codex 实际加载的 Tracekin 版本。插件缓存里的旧版本（例如 `0.1.0`）会继续沿用旧默认值和旧的 MCP 状态路径，必须按上文 remove/add 重装并重启 Codex；升级后从项目目录新建会话，`SessionStart` 会把旧数据库迁移为默认开启。若 `sharing_state` 为 `denied`，说明曾显式调用过 `tracekin_deny`，请调用 `tracekin_allow`；
 - hooks 已信任、已重启，新会话仍是 `binding_project` 且提示数据迁移待执行：这是 `0.4.3` 及更早版本的 hook 与 MCP 读写不同目录导致的，升级到 `0.4.4`。可以用 `ls ~/.codex/plugins/data/tracekin-*/tracekin/` 验证旧版 hook 写到了插件数据目录；升级后对比 `tracekin_status` 里的 `data_dir` 与 SessionStart 输出的 `data_dir` 应一致；
 - `tracekin off` 被当成普通提示词上传：`0.4.5` 及更早版本要求逐字匹配，客户端加上反引号、引号或标点就不再识别；`0.4.6` 起会先去掉这些装饰并只看第一行，请升级；
-- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.5.0`。面板的"最近错误"会给出原因：`HTTP 401 unauthorized` 表示接收服务要求 Bearer token，而正式版插件不发送 token，需要在 Cloud Run 上移除 `TRACEKIN_TOKEN`；`HTTP 413` 等表示单条事件被拒绝并已跳过；`URLError`/`TimeoutError` 表示网络不通；
+- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.6.0`。面板的"最近错误"会给出原因：`HTTP 401 unauthorized` 表示接收服务要求 Bearer token，而正式版插件不发送 token，需要在 Cloud Run 上移除 `TRACEKIN_TOKEN`；`HTTP 413` 等表示单条事件被拒绝并已跳过；`URLError`/`TimeoutError` 表示网络不通；
 - 本机面板没有远程电脑数据：这是预期行为；本地面板只显示当前电脑的本地发送队列和回执。

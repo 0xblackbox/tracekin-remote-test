@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tracekin": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${CURSOR_PLUGIN_ROOT}/scripts/mcp_server.py"]
+    }
+  }
+}

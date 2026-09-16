@@ -16,9 +16,9 @@ import time
 import urllib.error
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command
+from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.5.1+build.20260916202500"
+EXPECTED_VERSION = "0.6.0+build.20260916211500"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
@@ -184,6 +184,35 @@ def test_version_synced_with_manifests():
     assert commands and all("${CLAUDE_PLUGIN_ROOT}" in c for c in commands)
     assert "${PLUGIN_ROOT}" in json.loads((PLUGIN_DIR / codex["mcpServers"]).read_text())["mcpServers"]["tracekin"]["args"][0]
     assert "${CLAUDE_PLUGIN_ROOT}" in json.loads((PLUGIN_DIR / claude["mcpServers"]).read_text())["mcpServers"]["tracekin"]["args"][0]
+    # Cursor plugin manifest: Cursor event names, plugin-relative wrappers, ${CURSOR_PLUGIN_ROOT} for MCP.
+    cursor = json.loads((PLUGIN_DIR / ".cursor-plugin" / "plugin.json").read_text())
+    assert cursor["version"] == PLUGIN_VERSION
+    cursor_hooks = json.loads((PLUGIN_DIR / cursor["hooks"]).read_text())
+    assert cursor_hooks["version"] == 1 and set(cursor_hooks["hooks"]) == {"sessionStart", "beforeSubmitPrompt", "postToolUse", "stop"}
+    for event, entries in cursor_hooks["hooks"].items():
+        for entry in entries:
+            wrapper = PLUGIN_DIR / entry["command"]
+            assert wrapper.is_file() and os.access(wrapper, os.X_OK), entry
+            assert wrapper.name == ("start.sh" if event == "sessionStart" else "hook.sh")
+    assert "${CURSOR_PLUGIN_ROOT}" in json.loads((PLUGIN_DIR / cursor["mcpServers"]).read_text())["mcpServers"]["tracekin"]["args"][0]
+
+
+def test_cursor_plugin_wrappers_run_from_any_directory(d, root):
+    """The .cursor-plugin hooks are plugin-relative wrappers; they must locate the
+    real script from their own path, whatever cwd Cursor gives them."""
+    home = d / "cursor-plugin"
+    elsewhere = d / "elsewhere"
+    elsewhere.mkdir()
+    env = dict(base_env(), TRACEKIN_HOME=str(home), CURSOR_PROJECT_DIR=str(root))
+    try:
+        started = subprocess.run([str(PLUGIN_DIR / "cursor" / "start.sh")], input=json.dumps(cursor_event(root, "sessionStart")), text=True, capture_output=True, env=env, cwd=elsewhere, timeout=30)
+        assert started.returncode == 0 and json.loads(started.stdout) == {}, started.stderr
+        assert Store(home, create=False).snapshot()["current_project_authorized"] is True
+        hooked = subprocess.run([str(PLUGIN_DIR / "cursor" / "hook.sh")], input=json.dumps(cursor_event(root, "beforeSubmitPrompt")), text=True, capture_output=True, env=env, cwd=elsewhere, timeout=30)
+        assert hooked.returncode == 0 and json.loads(hooked.stdout) == {"continue": True}, hooked.stderr
+        assert Store(home, create=False).snapshot()["counts"] == {"pending": 1, "sent": 0}
+    finally:
+        stop_companion(home)
 
 
 def test_hook_and_status_never_create_state(d, root):
@@ -435,6 +464,91 @@ def test_claude_code_hook_payloads_are_normalized(d, root):
         assert forced.returncode == 0 and forced.stdout.strip() == "{}" and store.snapshot()["counts"] == {"pending": 0, "sent": 0}
     finally:
         stop_companion(home)
+
+
+def cursor_event(root, kind, **fields):
+    event = {"conversation_id": "conv-secret", "generation_id": "gen-1", "model": "model-x", "hook_event_name": kind, "cursor_version": "2.0.0", "workspace_roots": [str(root)], "user_email": "PRIVATE_EMAIL@example.com", "transcript_path": "/private/cursor/transcript.jsonl"}
+    if kind == "beforeSubmitPrompt":
+        event.update(prompt="PRIVATE_PROMPT", attachments=[])
+    elif kind == "postToolUse":
+        event.update(tool_name="Shell", tool_input={"command": "PRIVATE_COMMAND"}, tool_output="PRIVATE_OUTPUT", tool_use_id="call-1", cwd=str(root), duration=12)
+    elif kind == "stop":
+        event.update(status="completed", loop_count=1)
+    elif kind == "sessionStart":
+        event.update(session_id="cursor-session-1", is_background_agent=False, composer_mode="agent")
+    event.update(fields)
+    return event
+
+
+def test_cursor_hook_payloads_are_normalized(d, root):
+    assert detect_harness(cursor_event(root, "stop")) == "cursor" and detect_harness({"conversation_id": "c"}) == "cursor"
+    harness, normalized = normalize_hook_event(cursor_event(root, "postToolUse"))
+    assert harness == "cursor" and normalized["hook_event_name"] == "PostToolUse" and normalized["session_id"] == "conv-secret"
+    assert normalized["turn_id"] == "gen-1" and normalized["tool_response"] == "PRIVATE_OUTPUT" and normalized["cwd"] == str(root)
+    assert normalize_hook_event(cursor_event(root, "stop"))[1]["cwd"] == str(root), "workspace_roots supplies the project when cwd is absent"
+    assert tool_category("Shell") == "shell" and tool_category("run_terminal_cmd") == "shell" and tool_category("edit_file") == "edit" and tool_category("codebase_search") == "read" and tool_category("mcp__x__y") == "other" and tool_category("SomethingNew") == "other" and tool_category("WebSearchTool") == "web"
+    home = d / "cursor"
+    cursor_home = d / "dot-cursor"
+    cursor_home.mkdir()
+    env = dict(base_env(), TRACEKIN_HOME=str(home), CURSOR_PROJECT_DIR=str(root), CLAUDE_PROJECT_DIR=str(root))
+    try:
+        # User-level Cursor hooks run from ~/.cursor, not from the project.
+        started = run_cli("start", "--harness", "cursor", stdin=json.dumps(cursor_event(root, "sessionStart")), env=env, cwd=cursor_home)
+        assert started.returncode == 0 and json.loads(started.stdout) == {}, "Cursor sessionStart output must stay schema-clean"
+        store = Store(home, create=False)
+        assert store.snapshot()["current_project_authorized"] is True and store.snapshot()["config"]["projects"] == [str(root.resolve())]
+        prompt = run_cli("hook", "--harness", "cursor", stdin=json.dumps(cursor_event(root, "beforeSubmitPrompt")), env=env, cwd=cursor_home)
+        assert prompt.returncode == 0 and json.loads(prompt.stdout) == {"continue": True}, prompt.stdout
+        for kind in ("postToolUse", "stop"):
+            hooked = run_cli("hook", stdin=json.dumps(cursor_event(root, kind)), env=env, cwd=cursor_home)  # auto-detected
+            assert hooked.returncode == 0 and json.loads(hooked.stdout) == {}, hooked.stdout
+        events = {e["payload"]["event"]: e["payload"] for e in store.snapshot()["events"]}
+        assert set(events) == {"UserPromptSubmit", "PostToolUse", "Stop"} and store.snapshot()["counts"] == {"pending": 3, "sent": 0}
+        assert all(p["source"] == "cursor_hook" for p in events.values()) and len({p["turn_id"] for p in events.values()}) == 1
+        assert events["PostToolUse"]["tool_category"] == "shell" and events["PostToolUse"]["task_data"] == {"tool_input": {"command": "PRIVATE_COMMAND"}, "tool_response": "PRIVATE_OUTPUT"}
+        assert events["Stop"]["task_data"] == {} and events["UserPromptSubmit"]["task_data"] == {"prompt": "PRIVATE_PROMPT"}
+        raw = store.db.read_bytes()
+        assert b"conv-secret" not in raw and b"PRIVATE_EMAIL" not in raw and b"/private/cursor" not in raw and b"gen-1" not in raw
+        assert store.record(cursor_event(root, "postToolUse")) == "duplicate"
+        assert store.record(cursor_event(root, "postToolUse", generation_id="gen-2", tool_use_id="call-2")) == "queued"
+        # Session controls: the control prompt is withheld but must not block Cursor.
+        off = run_cli("hook", "--harness", "cursor", stdin=json.dumps(cursor_event(root, "beforeSubmitPrompt", generation_id="gen-3", prompt="`tracekin off`")), env=env, cwd=cursor_home)
+        assert json.loads(off.stdout) == {"continue": True} and store.snapshot()["session_controls"]["paused_sessions"] == 1
+        assert store.record(cursor_event(root, "postToolUse", generation_id="gen-3", tool_use_id="call-3")) == "session_disabled"
+        assert store.record(cursor_event(root, "beforeSubmitPrompt", generation_id="gen-4", prompt="tracekin on")) == "session_enabled"
+    finally:
+        stop_companion(home)
+
+
+def test_cursor_installer_merges_and_uninstalls_cleanly(d, root):
+    cursor_home = d / "dot-cursor"
+    cursor_home.mkdir()
+    (cursor_home / "hooks.json").write_text(json.dumps({"version": 1, "hooks": {"beforeSubmitPrompt": [{"command": "./other.sh"}], "afterFileEdit": [{"command": "./fmt.sh"}]}}))
+    (cursor_home / "mcp.json").write_text(json.dumps({"mcpServers": {"other": {"type": "stdio", "command": "other"}}}))
+    for _ in range(2):  # idempotent
+        installed = json.loads(run_cli("install-cursor", "--cursor-home", cursor_home).stdout)
+        assert installed["tracekin"] == "installed"
+    hooks = json.loads((cursor_home / "hooks.json").read_text())
+    assert hooks["version"] == 1 and hooks["hooks"]["afterFileEdit"] == [{"command": "./fmt.sh"}]
+    prompt_hooks = hooks["hooks"]["beforeSubmitPrompt"]
+    assert prompt_hooks[0] == {"command": "./other.sh"} and len(prompt_hooks) == 2 and prompt_hooks[1]["timeout"] == 3
+    assert set(hooks["hooks"]) == {"beforeSubmitPrompt", "afterFileEdit", "sessionStart", "postToolUse", "stop"}
+    assert hooks["hooks"]["sessionStart"][0]["command"].endswith("/tracekin/start.sh") and hooks["hooks"]["sessionStart"][0]["timeout"] == 5
+    mcp = json.loads((cursor_home / "mcp.json").read_text())
+    assert mcp["mcpServers"]["other"] == {"type": "stdio", "command": "other"} and mcp["mcpServers"]["tracekin"]["args"][0].endswith("mcp_server.py")
+    # The wrappers are argument-free executables that run the real hook.
+    home = d / "cursor-home"
+    Store(home).set_active_project(root)
+    env = dict(base_env(), TRACEKIN_HOME=str(home))
+    result = subprocess.run([str(cursor_home / "tracekin" / "hook.sh")], input=json.dumps(cursor_event(root, "beforeSubmitPrompt")), text=True, capture_output=True, env=env, cwd=cursor_home, timeout=30)
+    assert result.returncode == 0 and json.loads(result.stdout) == {"continue": True}, result.stderr
+    assert Store(home, create=False).snapshot()["counts"] == {"pending": 1, "sent": 0}
+    removed = json.loads(run_cli("uninstall-cursor", "--cursor-home", cursor_home).stdout)
+    assert removed["tracekin"] == "uninstalled" and removed["removed"] == 5
+    hooks = json.loads((cursor_home / "hooks.json").read_text())
+    assert hooks["hooks"] == {"beforeSubmitPrompt": [{"command": "./other.sh"}], "afterFileEdit": [{"command": "./fmt.sh"}]}
+    assert json.loads((cursor_home / "mcp.json").read_text())["mcpServers"] == {"other": {"type": "stdio", "command": "other"}}
+    assert not (cursor_home / "tracekin").exists()
 
 
 def test_hook_debug_trace_is_opt_in_and_keys_only(d, root):

@@ -33,17 +33,36 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.5.1+build.20260916202500"
-HARNESSES = ("codex", "claude-code")
+PLUGIN_VERSION = "0.6.0+build.20260916211500"
+HARNESSES = ("codex", "claude-code", "cursor")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
+# Cursor names its lifecycle events differently; map them onto the shared shape.
+CURSOR_EVENTS = {"sessionStart": "SessionStart", "beforeSubmitPrompt": "UserPromptSubmit", "postToolUse": "PostToolUse", "stop": "Stop"}
 # Coarse tool categories; never the tool name, command, or arguments.
 TOOL_CATEGORIES = {
-    "Bash": "shell", "exec_command": "shell", "shell": "shell",
-    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit",
-    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read",
-    "WebFetch": "web", "WebSearch": "web",
-    "Task": "agent", "Agent": "agent",
+    "Bash": "shell", "exec_command": "shell", "shell": "shell", "Shell": "shell", "run_terminal_cmd": "shell",
+    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "edit_file": "edit", "search_replace": "edit", "write": "edit",
+    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read", "read_file": "read", "list_dir": "read", "grep": "read", "codebase_search": "read", "glob_file_search": "read",
+    "WebFetch": "web", "WebSearch": "web", "web_search": "web", "fetch": "web",
+    "Task": "agent", "Agent": "agent", "task": "agent",
 }
+# Ordered: "web" must win over "search" (WebSearch), "shell" over "read" (read_shell_output).
+TOOL_CATEGORY_HINTS = (("web", "web"), ("fetch", "web"), ("shell", "shell"), ("terminal", "shell"), ("bash", "shell"), ("edit", "edit"), ("write", "edit"), ("patch", "edit"), ("replace", "edit"), ("read", "read"), ("grep", "read"), ("search", "read"), ("glob", "read"), ("list", "read"), ("agent", "agent"), ("task", "agent"))
+
+
+def tool_category(name):
+    """Coarse category for any harness's tool name; the name itself never leaves the machine."""
+    if not isinstance(name, str) or not name:
+        return "other"
+    if name in TOOL_CATEGORIES:
+        return TOOL_CATEGORIES[name]
+    if name.startswith("mcp__") or name.startswith("mcp_"):
+        return "other"
+    lowered = name.lower()
+    for hint, category in TOOL_CATEGORY_HINTS:
+        if hint in lowered:
+            return category
+    return "other"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
@@ -613,8 +632,7 @@ class Store:
                 payload["task_data"] = task_data
             if kind == "PostToolUse":
                 # Only the coarse category leaves the machine, never the tool name itself.
-                name = event.get("tool_name")
-                payload["tool_category"] = TOOL_CATEGORIES.get(name, "other") if isinstance(name, str) else "other"
+                payload["tool_category"] = tool_category(event.get("tool_name"))
             self.prune(c)
             if c.execute("SELECT count(*) FROM events").fetchone()[0] >= MAX_EVENTS:
                 return "full"
@@ -706,7 +724,9 @@ def send_https(endpoint, payload, endpoint_token=""):
 
 
 def detect_harness(event):
-    """Tell a Claude Code hook payload from a Codex one by its identifiers."""
+    """Tell Codex, Claude Code and Cursor hook payloads apart by their identifiers."""
+    if event.get("hook_event_name") in CURSOR_EVENTS or "conversation_id" in event or "generation_id" in event:
+        return "cursor"
     if "prompt_id" in event or "tool_output" in event or "tool_output_is_error" in event:
         return "claude-code"
     return "codex"
@@ -716,15 +736,32 @@ def normalize_hook_event(event, harness="auto"):
     """Map a harness-specific hook payload onto the Codex-shaped event that
     ``Store.record`` understands. Returns ``(harness, event)``.
 
-    Claude Code differences: the per-turn identifier is ``prompt_id`` (not
-    ``turn_id``), PostToolUse carries ``tool_output`` (not ``tool_response``),
-    and Stop carries no assistant message. The transcript file is never read
-    to fill the gap.
+    Claude Code: the per-turn identifier is ``prompt_id`` (not ``turn_id``),
+    PostToolUse may carry ``tool_output`` (not ``tool_response``), and Stop
+    may carry no assistant message. Cursor: events are named
+    ``beforeSubmitPrompt`` / ``postToolUse`` / ``stop``, the identifiers are
+    ``conversation_id`` / ``generation_id``, the project comes from
+    ``workspace_roots``, and Stop never carries the assistant message. The
+    transcript file is never read to fill any gap.
     """
     if harness == "auto":
         harness = detect_harness(event)
     if harness == "codex":
         return harness, event
+    if harness == "cursor":
+        normalized = dict(event)
+        normalized["hook_event_name"] = CURSOR_EVENTS.get(event.get("hook_event_name"), event.get("hook_event_name"))
+        if not normalized.get("session_id") or normalized["hook_event_name"] != "SessionStart":
+            normalized["session_id"] = event.get("conversation_id") or event.get("session_id")
+        normalized["turn_id"] = event.get("generation_id") or event.get("turn_id") or ("t-" + str(event.get("tool_use_id") or int(time.time() * 1000)))
+        if not normalized.get("cwd"):
+            roots = event.get("workspace_roots")
+            normalized["cwd"] = roots[0] if isinstance(roots, list) and roots and isinstance(roots[0], str) else (os.environ.get("CURSOR_PROJECT_DIR") or os.environ.get("CLAUDE_PROJECT_DIR") or "")
+        if "tool_response" not in normalized and "tool_output" in normalized:
+            normalized["tool_response"] = normalized["tool_output"]
+        if not normalized.get("tool_use_id") and normalized["hook_event_name"] == "PostToolUse":
+            normalized["tool_use_id"] = "call-" + str(int(time.time() * 1000))
+        return harness, normalized
     if harness != "claude-code":
         raise InputError("未知的 harness")
     normalized = dict(event)
@@ -766,15 +803,16 @@ def hook_debug(home, event, result, harness):
 
 
 def run_hook(home, harness="auto"):
+    """Record one hook event. Returns the raw event (or None when nothing was read)."""
     store = Store(home, create=False)
     # The off path intentionally does not read stdin or inspect session log files.
     if not store.enabled():
         hook_debug(home, None, "not_enabled", harness)
-        return
+        return None
     raw = sys.stdin.buffer.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
         hook_debug(home, None, "input_too_large", harness)
-        return
+        return None
     event = json.loads(raw)
     detected = detect_harness(event) if harness == "auto" and isinstance(event, dict) else harness
     try:
@@ -783,6 +821,19 @@ def run_hook(home, harness="auto"):
         hook_debug(home, event, f"error:{type(error).__name__}:{str(error)[:80]}", detected)
         raise
     hook_debug(home, event, result, detected)
+    return event
+
+
+def hook_response(harness, event):
+    """The stdout a harness expects from an observing hook.
+
+    Cursor's ``beforeSubmitPrompt`` must answer ``{"continue": true}`` or the
+    prompt is blocked; every other hook, on every harness, accepts ``{}``.
+    """
+    name = event.get("hook_event_name") if isinstance(event, dict) else None
+    if harness == "cursor" and name in ("beforeSubmitPrompt", "UserPromptSubmit"):
+        return {"continue": True}
+    return {}
 
 
 def bind_session_project(home, project=None):
@@ -863,7 +914,13 @@ def start_companion(home, project=None):
 
 
 def session_start_project():
-    fallback = os.getcwd()
+    """The project a SessionStart hook should bind.
+
+    Codex and Claude Code send ``cwd``; Cursor sends ``workspace_roots`` and
+    runs user-level hooks from ``~/.cursor``, so the harness-provided project
+    variables are preferred over the process working directory.
+    """
+    fallback = os.environ.get("CURSOR_PROJECT_DIR") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     if sys.stdin.isatty():
         return fallback
     raw = sys.stdin.buffer.read(MAX_INPUT + 1)
@@ -871,32 +928,134 @@ def session_start_project():
         return fallback
     try:
         value = json.loads(raw) if raw else {}
+        if not isinstance(value, dict):
+            return fallback
         cwd = value.get("cwd")
-        return cwd if isinstance(cwd, str) and cwd else fallback
+        if isinstance(cwd, str) and cwd:
+            return cwd
+        roots = value.get("workspace_roots")
+        if isinstance(roots, list) and roots and isinstance(roots[0], str) and roots[0]:
+            return roots[0]
+        return fallback
     except (ValueError, TypeError):
         return fallback
 
 
+CURSOR_HOOKS = {"sessionStart": ("start", 5), "beforeSubmitPrompt": ("hook", 3), "postToolUse": ("hook", 3), "stop": ("hook", 3)}
+
+
+def cursor_paths(cursor_home):
+    cursor_home = Path(cursor_home).expanduser().resolve()
+    return cursor_home, cursor_home / "hooks.json", cursor_home / "mcp.json", cursor_home / "tracekin"
+
+
+def load_json_object(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def install_cursor(cursor_home):
+    """Register Tracekin with Cursor, which has no plugin manifest.
+
+    Writes two argument-free wrapper scripts under ``<cursor_home>/tracekin/``
+    and merges entries into ``hooks.json`` and ``mcp.json``, keeping every
+    hook and server that is not ours. Re-running replaces our entries.
+    """
+    cursor_home, hooks_path, mcp_path, wrapper_dir = cursor_paths(cursor_home)
+    script = Path(__file__).resolve()
+    wrapper_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    wrappers = {}
+    for action in ("start", "hook"):
+        wrapper = wrapper_dir / f"{action}.sh"
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" {action} --harness cursor\n', encoding="utf-8")
+        wrapper.chmod(0o755)
+        wrappers[action] = str(wrapper)
+    hooks = load_json_object(hooks_path)
+    hooks.setdefault("version", 1)
+    table = hooks.get("hooks") if isinstance(hooks.get("hooks"), dict) else {}
+    for event, (action, timeout) in CURSOR_HOOKS.items():
+        entries = [e for e in (table.get(event) or []) if not (isinstance(e, dict) and str(e.get("command", "")).startswith(str(wrapper_dir)))]
+        entries.append({"command": wrappers[action], "timeout": timeout})
+        table[event] = entries
+    hooks["hooks"] = table
+    write_json(hooks_path, hooks)
+    mcp = load_json_object(mcp_path)
+    servers = mcp.get("mcpServers") if isinstance(mcp.get("mcpServers"), dict) else {}
+    servers["tracekin"] = {"type": "stdio", "command": sys.executable, "args": [str(script.with_name("mcp_server.py"))]}
+    mcp["mcpServers"] = servers
+    write_json(mcp_path, mcp)
+    return {"tracekin": "installed", "harness": "cursor", "hooks": str(hooks_path), "mcp": str(mcp_path), "wrappers": wrappers, "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
+
+
+def uninstall_cursor(cursor_home):
+    """Remove only Tracekin's hook entries, MCP server and wrappers."""
+    cursor_home, hooks_path, mcp_path, wrapper_dir = cursor_paths(cursor_home)
+    removed = 0
+    hooks = load_json_object(hooks_path)
+    table = hooks.get("hooks") if isinstance(hooks.get("hooks"), dict) else {}
+    for event in list(table):
+        kept = [e for e in (table.get(event) or []) if not (isinstance(e, dict) and str(e.get("command", "")).startswith(str(wrapper_dir)))]
+        removed += len(table.get(event) or []) - len(kept)
+        if kept:
+            table[event] = kept
+        else:
+            table.pop(event, None)
+    if hooks_path.exists():
+        hooks["hooks"] = table
+        write_json(hooks_path, hooks)
+    mcp = load_json_object(mcp_path)
+    servers = mcp.get("mcpServers") if isinstance(mcp.get("mcpServers"), dict) else {}
+    if servers.pop("tracekin", None) is not None:
+        removed += 1
+        mcp["mcpServers"] = servers
+        write_json(mcp_path, mcp)
+    for wrapper in ("start.sh", "hook.sh"):
+        (wrapper_dir / wrapper).unlink(missing_ok=True)
+    try:
+        wrapper_dir.rmdir()
+    except OSError:
+        pass
+    return {"tracekin": "uninstalled", "harness": "cursor", "removed": removed}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["hook", "status", "start"])
+    parser.add_argument("action", choices=["hook", "status", "start", "install-cursor", "uninstall-cursor"])
     parser.add_argument("--home", type=Path, default=home_dir())
     parser.add_argument("--harness", choices=("auto",) + HARNESSES, default="auto", help="hook payload dialect; auto-detected from the payload by default")
+    parser.add_argument("--cursor-home", type=Path, default=Path("~/.cursor"), help="Cursor user config directory for install-cursor / uninstall-cursor")
     args = parser.parse_args()
     if args.action == "start":
         data_dir = str(Path(args.home).expanduser().resolve())
         try:
             project = session_start_project()
-            print(json.dumps({"tracekin": start_companion(args.home, project), "project": project, "data_dir": data_dir}))
+            outcome = {"tracekin": start_companion(args.home, project), "project": project, "data_dir": data_dir}
         except (OSError, ValueError, TypeError, sqlite3.Error) as error:
             # Surface the reason in the hook output instead of failing silently.
-            print(json.dumps({"tracekin": "not_started", "data_dir": data_dir, "error": str(error)[:200]}, ensure_ascii=False))
+            outcome = {"tracekin": "not_started", "data_dir": data_dir, "error": str(error)[:200]}
+        hook_debug(args.home, {"hook_event_name": "SessionStart"}, outcome["tracekin"] + ("" if outcome.get("project") else ":unbound"), args.harness)
+        # Cursor validates sessionStart output against its own schema; the
+        # diagnostics stay in the trace file there.
+        print(json.dumps({} if args.harness == "cursor" else outcome, ensure_ascii=False))
     elif args.action == "hook":
+        event = None
         try:
-            run_hook(args.home, args.harness)
+            event = run_hook(args.home, args.harness)
         except (OSError, ValueError, TypeError, sqlite3.Error):
             pass  # A companion must not block the user's task.
-        print("{}")
+        print(json.dumps(hook_response(args.harness, event)))
+    elif args.action == "install-cursor":
+        print(json.dumps(install_cursor(args.cursor_home), ensure_ascii=False))
+    elif args.action == "uninstall-cursor":
+        print(json.dumps(uninstall_cursor(args.cursor_home), ensure_ascii=False))
     else:
         # Pure read: no directory, schema, migration, or prune writes.
         print(json.dumps(Store(args.home, create=False).snapshot(), ensure_ascii=False))
