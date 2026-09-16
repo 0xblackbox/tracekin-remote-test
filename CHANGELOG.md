@@ -2,6 +2,13 @@
 
 版本格式 `X.Y.Z+build.<时间戳>`（0.4.x 为 `+codex.<时间戳>`），时间戳只用于让插件缓存识别新版本。
 
+## 未发布
+
+- companion 启动时不再对 `127.0.0.1` 做反向 DNS 查询：在反向解析慢的环境（GitHub macOS runner、部分 VPN）下该查询会让 companion 卡住几十秒、迟迟写不出 `runtime.json`。
+- companion 的输出记录到 `~/.tracekin/companion.log`，便于排查"面板起不来"。
+- 测试不再让临时 companion 在事件入队期间运行，避免向真实接收服务投递测试数据。
+- 文档重组：项目主页 README、按主题组织的技术参考、CHANGELOG、独立的跨电脑验收流程；新增 GitHub Actions 测试工作流与 MIT 许可证。
+
 ## 0.6.0 · 2026-09-16
 
 - 新增 Cursor：`sessionStart` / `beforeSubmitPrompt` / `postToolUse` / `stop` 归一化到共享事件模型，`conversation_id` / `generation_id` 作会话与轮次 ID，项目取 `workspace_roots`，`beforeSubmitPrompt` 回 `{"continue": true}`。
