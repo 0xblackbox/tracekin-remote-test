@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-This is the long-form companion to the [repository README](../../README.md): runtime details, the default policy, delivery, per-harness differences and troubleshooting. Release history is in the [CHANGELOG](../../CHANGELOG.md); the cross-machine acceptance walkthrough is in [REMOTE-TEST](../../REMOTE-TEST.md) (Chinese).
+This is the long-form companion to the [repository README](../../README.md): runtime details, the default policy, delivery, per-harness differences and troubleshooting. Release history is in the [CHANGELOG](../../CHANGELOG.md); the cross-machine acceptance walkthrough is in [REMOTE-TEST](../../REMOTE-TEST.md).
 
 ## Four surfaces
 

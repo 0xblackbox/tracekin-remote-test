@@ -1,59 +1,61 @@
-# 跨电脑完整验收流程
+# Cross-machine acceptance walkthrough
 
-在另一台电脑安装同一个插件，验证三件事：hooks 在新会话的 `UserPromptSubmit` / `PostToolUse` / `Stop` 触发；MCP 能返回只读状态与数据契约；事件能送达 Tracekin Cloud。每台电脑的数据目录与面板彼此独立，远程电脑的事件在远程面板里看，以"接收服务已确认"计数为准。
+English | [简体中文](REMOTE-TEST.zh-CN.md)
 
-## 1. 安装
+Install the same plugin on another machine and verify three things: the hooks fire on `UserPromptSubmit` / `PostToolUse` / `Stop` in a new session; the MCP server returns the read-only status and the data contract; events reach Tracekin Cloud. Each machine has its own data directory and dashboard, so the remote machine's events are visible on the remote dashboard; its "acknowledged by the receiver" count is the source of truth.
 
-先确认 `python3 --version` 可用，然后按 harness 安装（命令见 [README](README.zh-CN.md#安装)）。Codex 需要重启 Codex Desktop，在 Plugins Directory 确认已启用，并在 Hooks 页面逐条审阅、信任 bundled hooks；Claude Code 通过 marketplace 安装即已信任；Cursor 运行 `install-cursor` 后重启；Gemini CLI 用 `gemini extensions install <仓库地址>` 后重启 CLI；OpenCode 运行 `install-opencode` 后重启。
+## 1. Install
 
-已装旧版时先升级：Codex 用 `marketplace upgrade` → `remove` → `add`，Claude Code 用 `claude plugin update`，Cursor 在 checkout 里 `git pull`。版本应显示 `0.8.0+build.<时间戳>`。
+Check that `python3 --version` works, then install for your harness (commands in the [README](README.md#install)). Codex needs a restart of Codex Desktop, a check in Plugins Directory that the plugin is enabled, and a review-and-trust pass over the bundled hooks on the Hooks page; Claude Code trusts marketplace plugins on install; Cursor needs a restart after `install-cursor`; Gemini CLI needs a restart after `gemini extensions install <repo url>`; OpenCode needs a restart after `install-opencode`.
 
-## 2. 新建会话
+Upgrade first if an older version is installed: Codex uses `marketplace upgrade` → `remove` → `add`, Claude Code uses `claude plugin update`, Cursor and OpenCode use `git pull` in the checkout, Gemini CLI uses `gemini extensions update tracekin`. The version should read `0.8.0+build.<timestamp>`.
 
-从目标项目目录**新建一个会话**，`SessionStart` 会自动绑定项目、迁移旧数据、拉起 companion。不要在旧会话里继续。查看面板地址：
+## 2. Start a new session
+
+Start a **new session from the target project directory**; `SessionStart` binds the project, migrates old data and starts the companion. Do not continue in an old session. Find the dashboard address:
 
 ```bash
 python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/runtime.json")))["url"])'
 ```
 
-面板应显示当前项目和 Tracekin Cloud 固定地址，不需要填写路径、地址或令牌，也不需要点授权。
+The dashboard should show the current project and the fixed Tracekin Cloud endpoint. There is no path, endpoint or token to enter and no consent button to press.
 
-## 3. Hooks 冒烟
+## 3. Hooks smoke test
 
-在同一会话依次发送：
+In the same session send, one after the other:
 
 ```text
 Tracekin remote smoke test: hooks
 ```
 
 ```text
-请执行 `printf TRACEKIN_REMOTE_TOOL_OK`，并把输出原样返回。
+Run `printf TRACEKIN_REMOTE_TOOL_OK` and return the output verbatim.
 ```
 
-预期：面板"待发送"回到 0，"接收服务已确认"至少增加 3（提示、工具调用、会话结束），事件卡片非 synthetic。
+Expected: the dashboard's pending count returns to 0, "acknowledged by the receiver" grows by at least 3 (the prompt, the tool call and the end of the turn), and the event cards are not synthetic.
 
-## 4. MCP 检查
+## 4. MCP check
 
-在同一会话发送：
+In the same session send:
 
 ```text
-请调用 Tracekin MCP，查询当前状态和数据契约；只读查询，不发送新数据。
+Call the Tracekin MCP tools to read the current status and the data contract. Read-only; do not send new data.
 ```
 
-预期返回 `schema: tracekin.activity.v1`、`sharing_state: enabled`、`current_project_authorized: true`、`data_dir: ~/.tracekin`、`proof_status: activity_only_not_training_proof`。可以再分别调用 `tracekin_deny` 与 `tracekin_allow` 验证全局撤销和恢复。
+Expected: `schema: tracekin.activity.v1`, `sharing_state: enabled`, `current_project_authorized: true`, `data_dir: ~/.tracekin`, `proof_status: activity_only_not_training_proof`. You can then call `tracekin_deny` and `tracekin_allow` in turn to verify the global revoke and restore.
 
-## 5. 会话暂停
+## 5. Session pause
 
-新建会话，第一条发 `tracekin off`（带反引号也可以），再发一条普通提示。预期该会话"接收服务已确认"不再增加，"已暂停会话"为 1；发 `tracekin on` 后恢复。其他新会话仍默认共享。
+Start a new session, send `tracekin off` as the first message (backticks are fine), then send an ordinary prompt. Expected: that session's acknowledged count stops growing and "paused sessions" reads 1; `tracekin on` resumes it. Other new sessions keep sharing by default.
 
-## 6. 不用模型也能查
+## 6. Check without the model
 
 ```bash
-python3 <插件目录>/scripts/tracekin.py status
+python3 <plugin directory>/scripts/tracekin.py status
 ```
 
-插件目录：Codex 在 `~/.codex/plugins/cache/<marketplace>/tracekin/<version>/`，Claude Code 在 `~/.claude/plugins/cache/...`，Cursor 就是 checkout。这条是纯读命令，等价于 MCP `tracekin_status`。
+The plugin directory is `~/.codex/plugins/cache/<marketplace>/tracekin/<version>/` for Codex, `~/.claude/plugins/cache/...` for Claude Code, `~/.gemini/extensions/tracekin/plugins/tracekin/` for Gemini CLI, and the checkout itself for Cursor and OpenCode. This is a pure read, equivalent to the MCP `tracekin_status` tool.
 
-## 7. 排错
+## 7. Troubleshooting
 
-见 [plugins/tracekin/README.zh-CN.md 的排错表](plugins/tracekin/README.zh-CN.md#排错)。需要看 hook 实际送了哪些字段时：`touch ~/.tracekin/debug-hooks`，再看 `~/.tracekin/hook-debug.log`，只记字段名不记内容。
+See the [troubleshooting table in plugins/tracekin/README.md](plugins/tracekin/README.md#troubleshooting). To see which fields a hook actually received: `touch ~/.tracekin/debug-hooks`, then read `~/.tracekin/hook-debug.log`; it records field names only, never content.

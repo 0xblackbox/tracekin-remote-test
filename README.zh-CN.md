@@ -130,7 +130,7 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 │   ├── assets/              本地面板
 │   └── skills/tracekin/     技能说明
 ├── CHANGELOG.md
-└── REMOTE-TEST.md           跨电脑验收流程
+└── REMOTE-TEST.md           跨电脑验收流程（每份文档都有 .zh-CN.md 中文版）
 ```
 
 ## 开发与测试
@@ -162,7 +162,7 @@ python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --pro
 ## 文档
 
 - [plugins/tracekin/README.zh-CN.md](plugins/tracekin/README.zh-CN.md)：技术参考（运行细节、默认策略、投递、各 harness 差异、排错）；[English](plugins/tracekin/README.md)
-- [REMOTE-TEST.md](REMOTE-TEST.md)：跨电脑完整验收流程
+- [REMOTE-TEST.zh-CN.md](REMOTE-TEST.zh-CN.md)：跨电脑完整验收流程；[English](REMOTE-TEST.md)
 - [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)：版本记录；[English](CHANGELOG.md)
 
 ## License

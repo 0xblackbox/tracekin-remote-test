@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-本文是 [仓库 README](../../README.zh-CN.md) 的展开版：运行细节、默认策略、投递、各 harness 差异和排错。版本记录见 [CHANGELOG](../../CHANGELOG.zh-CN.md)，跨电脑验收见 [REMOTE-TEST](../../REMOTE-TEST.md)。
+本文是 [仓库 README](../../README.zh-CN.md) 的展开版：运行细节、默认策略、投递、各 harness 差异和排错。版本记录见 [CHANGELOG](../../CHANGELOG.zh-CN.md)，跨电脑验收见 [REMOTE-TEST](../../REMOTE-TEST.zh-CN.md)。
 
 ## 四个表面
 

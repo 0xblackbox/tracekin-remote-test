@@ -130,7 +130,7 @@ Deeper diagnostics and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`
 │   ├── assets/              local dashboard
 │   └── skills/tracekin/     skill instructions
 ├── CHANGELOG.md
-└── REMOTE-TEST.md           cross-machine acceptance walkthrough
+└── REMOTE-TEST.md           cross-machine acceptance walkthrough (every doc has a .zh-CN.md twin)
 ```
 
 ## Development and tests
@@ -163,7 +163,7 @@ Before publishing, validate the manifests with `claude plugin validate --strict 
 
 - [plugins/tracekin/README.md](plugins/tracekin/README.md): technical reference (runtime details, default policy, delivery, per-harness differences, troubleshooting); [中文版](plugins/tracekin/README.zh-CN.md)
 - [CHANGELOG.md](CHANGELOG.md): release history; [中文版](CHANGELOG.zh-CN.md)
-- [REMOTE-TEST.md](REMOTE-TEST.md): cross-machine acceptance walkthrough (Chinese)
+- [REMOTE-TEST.md](REMOTE-TEST.md): cross-machine acceptance walkthrough; [中文版](REMOTE-TEST.zh-CN.md)
 - [README.zh-CN.md](README.zh-CN.md): this page in Chinese
 
 ## License
