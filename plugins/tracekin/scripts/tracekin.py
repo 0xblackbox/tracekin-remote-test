@@ -23,7 +23,7 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.3+codex.20260916133908"
+PLUGIN_VERSION = "0.4.4+codex.20260916141330"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
@@ -53,8 +53,19 @@ STATE_HINTS = {
 
 
 def home_dir():
-    default = Path(os.environ["PLUGIN_DATA"]) / "tracekin" if os.environ.get("PLUGIN_DATA") else Path.home() / ".codex" / "tracekin"
-    return Path(os.environ.get("TRACEKIN_HOME", str(default))).expanduser().resolve()
+    """Shared local data directory for hooks, the panel, and the MCP server.
+
+    Codex injects ``PLUGIN_DATA`` into hook commands only, never into a
+    plugin's ``.mcp.json`` server, so it must not select the directory:
+    every surface resolves the same ``$CODEX_HOME/tracekin`` (default
+    ``~/.codex/tracekin``). ``TRACEKIN_HOME`` remains an explicit override.
+    """
+    override = os.environ.get("TRACEKIN_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    codex_home = os.environ.get("CODEX_HOME")
+    base = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+    return (base / "tracekin").resolve()
 
 
 class InputError(ValueError):
@@ -269,6 +280,7 @@ class Store:
             state = "binding_project"
         return {
             "config": cfg,
+            "data_dir": str(self.home),
             "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)},
             "events": events,
             "current_project_authorized": authorized,
@@ -582,9 +594,43 @@ def bind_session_project(home, project=None):
     return project
 
 
+def stop_recorded_companion(runtime):
+    """Terminate the companion recorded in a runtime.json and remove the record."""
+    try:
+        pid = int(json.loads(runtime.read_text()).get("pid", 0))
+        if pid > 0:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(20):
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.05)
+    except (OSError, ValueError, TypeError):
+        pass
+    runtime.unlink(missing_ok=True)
+
+
+def stop_legacy_companions(home):
+    """Versions <= 0.4.3 let hooks run the companion from $PLUGIN_DATA/tracekin.
+
+    That directory is never read by the MCP server, so a companion still
+    serving it would keep delivering from a stale database. Stop it so the
+    shared directory has exactly one companion.
+    """
+    for variable in ("PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
+        value = os.environ.get(variable)
+        if not value:
+            continue
+        legacy = Path(value).expanduser() / "tracekin" / "runtime.json"
+        if legacy.exists() and legacy.resolve() != (Path(home) / "runtime.json").resolve():
+            stop_recorded_companion(legacy)
+
+
 def start_companion(home, project=None):
     """Start the current loopback UI and bind its project to default sharing."""
     project = bind_session_project(home, project)
+    stop_legacy_companions(home)
     runtime = Path(home) / "runtime.json"
     if runtime.exists():
         try:
@@ -634,11 +680,13 @@ def main():
     parser.add_argument("--home", type=Path, default=home_dir())
     args = parser.parse_args()
     if args.action == "start":
+        data_dir = str(Path(args.home).expanduser().resolve())
         try:
             project = session_start_project()
-            print(json.dumps({"tracekin": start_companion(args.home, project), "project": project}))
-        except (OSError, ValueError, TypeError):
-            print(json.dumps({"tracekin": "not_started"}))
+            print(json.dumps({"tracekin": start_companion(args.home, project), "project": project, "data_dir": data_dir}))
+        except (OSError, ValueError, TypeError, sqlite3.Error) as error:
+            # Surface the reason in the hook output instead of failing silently.
+            print(json.dumps({"tracekin": "not_started", "data_dir": data_dir, "error": str(error)[:200]}, ensure_ascii=False))
     elif args.action == "hook":
         try:
             run_hook(args.home)

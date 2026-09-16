@@ -14,9 +14,9 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project
+from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, home_dir
 
-EXPECTED_VERSION = "0.4.3+codex.20260916133908"
+EXPECTED_VERSION = "0.4.4+codex.20260916141330"
 SCRIPTS = Path(__file__).resolve().parent
 TRACEKIN = SCRIPTS / "tracekin.py"
 MCP_SERVER = SCRIPTS / "mcp_server.py"
@@ -39,7 +39,7 @@ def cli_status(home):
     return json.loads(result.stdout)
 
 
-def mcp_calls(home, cwd, *tool_names):
+def mcp_calls(home, cwd, *tool_names, env=None):
     """Drive mcp_server.py over stdio and return one parsed line per request."""
     requests = [
         {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
@@ -47,7 +47,7 @@ def mcp_calls(home, cwd, *tool_names):
     ]
     for index, name in enumerate(tool_names, start=3):
         requests.append({"jsonrpc": "2.0", "id": index, "method": "tools/call", "params": {"name": name, "arguments": {}}})
-    env = dict(os.environ, TRACEKIN_HOME=str(home))
+    env = dict(env) if env is not None else dict(os.environ, TRACEKIN_HOME=str(home))
     env.pop("TRACEKIN_PROJECT", None)
     result = subprocess.run([sys.executable, str(MCP_SERVER)], input="\n".join(json.dumps(r) for r in requests) + "\n", text=True, capture_output=True, cwd=cwd, env=env, timeout=30)
     assert result.returncode == 0, result.stderr
@@ -237,6 +237,58 @@ def test_session_start_hook_command(d, root):
         assert json.loads(again.stdout)["tracekin"] == "already_running"
     finally:
         stop_companion(home)
+
+
+def test_hooks_and_mcp_share_one_data_dir(d, root):
+    """Codex injects PLUGIN_DATA into hook commands only, never into the .mcp.json
+    server. The data directory must therefore come from CODEX_HOME on every surface."""
+    codex_home = d / "codex-home"
+    plugin_data = d / "plugins" / "data" / "tracekin-tracekin-remote-test"
+    base_env = {k: v for k, v in os.environ.items() if k not in ("TRACEKIN_HOME", "PLUGIN_DATA", "CLAUDE_PLUGIN_DATA", "CODEX_HOME", "TRACEKIN_PROJECT")}
+    hook_env = dict(base_env, CODEX_HOME=str(codex_home), PLUGIN_DATA=str(plugin_data), CLAUDE_PLUGIN_DATA=str(plugin_data))
+    mcp_env = dict(base_env, CODEX_HOME=str(codex_home))
+    expected = str((codex_home / "tracekin").resolve())
+    saved = {k: os.environ.get(k) for k in ("TRACEKIN_HOME", "PLUGIN_DATA", "CODEX_HOME")}
+    try:
+        os.environ.pop("TRACEKIN_HOME", None)
+        os.environ["PLUGIN_DATA"] = str(plugin_data)
+        os.environ["CODEX_HOME"] = str(codex_home)
+        assert str(home_dir()) == expected, "PLUGIN_DATA must not select the data directory"
+        os.environ.pop("CODEX_HOME")
+        assert home_dir() == (Path.home() / ".codex" / "tracekin").resolve()
+        os.environ["TRACEKIN_HOME"] = str(d / "override")
+        assert home_dir() == (d / "override").resolve()
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    # A companion left behind by a <= 0.4.3 hook in the PLUGIN_DATA directory.
+    legacy_dir = plugin_data / "tracekin"
+    legacy_dir.mkdir(parents=True)
+    stale = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    (legacy_dir / "runtime.json").write_text(json.dumps({"pid": stale.pid, "url": "http://127.0.0.1:1/#x", "mode": "production", "version": "0.4.3+codex.0"}))
+    try:
+        # SessionStart runs with the hook environment (PLUGIN_DATA set, no --home).
+        started = run_cli("start", stdin=json.dumps({"cwd": str(root)}), env=hook_env, cwd=root)
+        assert started.returncode == 0, started.stderr
+        out = json.loads(started.stdout)
+        assert out["tracekin"] == "started" and out["data_dir"] == expected, out
+        assert (codex_home / "tracekin" / "tracekin.sqlite3").exists() and not (legacy_dir / "tracekin.sqlite3").exists()
+        assert stale.wait(timeout=5) != 0 and not (legacy_dir / "runtime.json").exists(), "legacy companion was not stopped"
+        # The MCP server runs without PLUGIN_DATA and must read the same database.
+        status = mcp_payload(mcp_calls(None, root, "tracekin_status", env=mcp_env)[2])
+        assert status["data_dir"] == expected and status["sharing_state"] == "enabled" and status["current_project_authorized"] is True
+        hooked = run_cli("hook", stdin=json.dumps(tool_event(root)), env=hook_env, cwd=root)
+        assert hooked.returncode == 0 and hooked.stdout.strip() == "{}"
+        assert mcp_payload(mcp_calls(None, root, "tracekin_status", env=mcp_env)[2])["counts"] == {"pending": 1, "sent": 0}
+        assert cli_status(codex_home / "tracekin")["counts"] == {"pending": 1, "sent": 0}
+    finally:
+        stop_companion(codex_home / "tracekin")
+        if stale.poll() is None:
+            stale.kill()
+            stale.wait()
 
 
 def test_tracekin_off_and_on_control_only_current_session(d, root):
