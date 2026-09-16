@@ -1,6 +1,8 @@
 # Tracekin
 
-**Local-first activity companion for coding agents.** 在 Codex、Claude Code、Cursor、Gemini CLI、OpenCode 里以插件形式运行：安装即默认同步当前项目的活动事件到 Tracekin Cloud，敏感会话一句 `tracekin off` 即可暂停，永远不读会话记录文件。
+English | [简体中文](README.zh-CN.md)
+
+**Local-first activity companion for coding agents.** Tracekin runs as a plugin inside Codex, Claude Code, Cursor, Gemini CLI and OpenCode: installing it syncs the current project's activity events to Tracekin Cloud by default, one `tracekin off` pauses a sensitive session, and the transcript file is never read.
 
 ![version](https://img.shields.io/badge/version-0.8.0-blue)
 ![Codex](https://img.shields.io/badge/Codex-plugin-black)
@@ -11,129 +13,129 @@
 [![tests](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml/badge.svg)](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## 它做什么
+## What it does
 
-| 能力 | 说明 |
+| Capability | Details |
 |------|------|
-| 安装即开启 | 首次 `SessionStart` 自动绑定当前项目并启用同步，不需要填地址、令牌或点授权 |
-| 单会话暂停 | 把 `tracekin off` 作为会话第一条消息，只暂停这一个会话；其他会话和全局设置不受影响 |
-| 本地队列与回执 | 事件先进本机 SQLite 队列，由本地 companion 投递，面板显示待发送 / 已确认 / 已暂停会话 |
-| 只读状态 | MCP 工具 `tracekin_status` 纯读，不建表、不迁移、不 prune，数据库只读时也能返回 |
-| 五种 harness 共用一份数据 | `~/.tracekin` 一台机器一份授权、一个队列、一个面板 |
+| On by default | The first `SessionStart` binds the current project and enables syncing. No endpoint, token or consent click to fill in. |
+| Per-session pause | Send `tracekin off` as the first message of a session to pause that session only. Other sessions and the global setting are untouched. |
+| Local queue and receipts | Events go into a local SQLite queue first; a local companion delivers them and a dashboard shows pending, acknowledged and paused sessions. |
+| Read-only status | The `tracekin_status` MCP tool is a pure read: no table creation, migration or pruning, and it still answers on a read-only database. |
+| One data set across five harnesses | `~/.tracekin` holds one consent record, one queue and one companion per machine. |
 
-## 安装
+## Install
 
-| Harness | 命令 |
+| Harness | Command |
 |------|------|
-| Codex | `codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git` 然后 `codex plugin add tracekin@tracekin-remote-test`，重启 Codex 并在 Hooks 页面信任 bundled hooks |
-| Claude Code | `claude plugin marketplace add 0xblackbox/tracekin-remote-test` 然后 `claude plugin install tracekin@tracekin-remote-test` |
-| Cursor | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` 然后 `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor`，重启 Cursor |
-| Gemini CLI | `gemini extensions install https://github.com/0xblackbox/tracekin-remote-test`，重启 CLI；或在 checkout 里 `python3 plugins/tracekin/scripts/tracekin.py install-gemini` 写入 `~/.gemini/settings.json` |
-| OpenCode | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` 然后 `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode`，重启 OpenCode |
+| Codex | `codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git` then `codex plugin add tracekin@tracekin-remote-test`; restart Codex and trust the bundled hooks on the Hooks page |
+| Claude Code | `claude plugin marketplace add 0xblackbox/tracekin-remote-test` then `claude plugin install tracekin@tracekin-remote-test` |
+| Cursor | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` then `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor`; restart Cursor |
+| Gemini CLI | `gemini extensions install https://github.com/0xblackbox/tracekin-remote-test`; restart the CLI. Alternatively `python3 plugins/tracekin/scripts/tracekin.py install-gemini` from a checkout writes `~/.gemini/settings.json` |
+| OpenCode | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` then `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode`; restart OpenCode |
 
-升级：Codex 用 `codex plugin marketplace upgrade tracekin-remote-test` 后 remove / add；Claude Code 用 `claude plugin update tracekin@tracekin-remote-test`；Cursor 与 OpenCode 在 checkout 里 `git pull`；Gemini CLI 用 `gemini extensions update tracekin`。安装后从**项目目录**新建一个会话，让 `SessionStart` 完成绑定。
+Upgrades: Codex uses `codex plugin marketplace upgrade tracekin-remote-test` followed by remove / add; Claude Code uses `claude plugin update tracekin@tracekin-remote-test`; Cursor and OpenCode use `git pull` in the checkout; Gemini CLI uses `gemini extensions update tracekin`. After installing, start a new session **from the project directory** so `SessionStart` can bind it.
 
-## 工作原理
+## How it works
 
 ```mermaid
 flowchart LR
     subgraph harness["Codex / Claude Code / Cursor / Gemini CLI / OpenCode"]
         H1[SessionStart] --> S[tracekin.py start]
         H2[UserPromptSubmit<br/>PostToolUse<br/>Stop] --> K[tracekin.py hook]
-        M[MCP tracekin_status] --> R[只读 snapshot]
+        M[MCP tracekin_status] --> R[read-only snapshot]
     end
-    OC[OpenCode 事件总线<br/>opencode/tracekin.js] -.->|翻译成同样的 payload| K
-    S -->|绑定项目 · 迁移 · 拉起 companion| DB[(~/.tracekin/tracekin.sqlite3)]
-    K -->|归一化 · 会话指令 · 入队| DB
+    OC[OpenCode event bus<br/>opencode/tracekin.js] -.->|translated to the same payload| K
+    S -->|bind project · migrate · start companion| DB[(~/.tracekin/tracekin.sqlite3)]
+    K -->|normalize · session commands · enqueue| DB
     R --> DB
-    DB --> W[companion serve.py<br/>投递 worker + 本地面板]
-    W -->|HTTPS POST · 幂等 · 退避重试| C[Tracekin Cloud ingest]
+    DB --> W[companion serve.py<br/>delivery worker + local dashboard]
+    W -->|HTTPS POST · idempotent · backoff| C[Tracekin Cloud ingest]
 ```
 
-- **Hooks** 负责采集和 `tracekin off / on / status` 指令，不依赖模型是否调用工具。
-- **companion** 由 SessionStart 拉起，一台机器一个，负责投递和 `127.0.0.1` 面板。
-- **MCP** 只提供状态查询、数据契约，以及两个兼容入口 `tracekin_allow`（修复 / 重新启用）和 `tracekin_deny`（全局紧急撤销）。
+- **Hooks** do the capturing and handle `tracekin off / on / status`; nothing depends on the model choosing to call a tool.
+- **The companion** is started by `SessionStart`, one per machine, and owns delivery and the `127.0.0.1` dashboard.
+- **MCP** only offers status, the data contract, and two compatibility entry points: `tracekin_allow` (repair / re-enable) and `tracekin_deny` (global emergency revoke).
 
-## 会话控制
+## Session controls
 
-| 指令 | 作用 | 会上传吗 |
+| Command | Effect | Uploaded? |
 |------|------|------|
-| `tracekin off` | 暂停当前会话，丢弃该会话尚未发送的事件 | 否 |
-| `tracekin on` | 恢复当前会话 | 否 |
-| `tracekin status` | 查询当前会话的有效状态 | 否 |
+| `tracekin off` | Pause the current session and drop its unsent events | No |
+| `tracekin on` | Resume the current session | No |
+| `tracekin status` | Report the effective state of the current session | No |
 
-指令允许反引号、引号、加粗、结尾标点和大小写差异，也可以作为长消息的第一行。全局关闭只有显式调用 `tracekin_deny` 一种方式，普通 SessionStart 不会覆盖它，`tracekin_allow` 可恢复。
+Commands tolerate backticks, quotes, bold markers, trailing punctuation and letter case, and may be the first line of a longer message. The only global off switch is an explicit `tracekin_deny`; an ordinary `SessionStart` never overrides it and `tracekin_allow` restores it.
 
-## 数据与隐私
+## Data and privacy
 
-默认 `share_all=true`，即 `full_task` 模式。每条事件包含：
+The default is `share_all=true`, the `full_task` mode. Every event carries:
 
-| 字段 | 内容 |
+| Field | Content |
 |------|------|
-| `id` `project_id` `session_id` `turn_id` | 每台设备随机 salt 的 HMAC-SHA256，原始 ID 和项目路径不出本机，跨设备不可关联 |
-| `event` `observed_at` `source` `privacy_mode` `synthetic` | 元数据；`source` 为 `codex_hook` / `claude_code_hook` / `cursor_hook` / `gemini_hook` / `opencode_hook` |
-| `tool_category` | 仅 PostToolUse：`shell` / `edit` / `read` / `web` / `agent` / `other`，不含工具名 |
-| `task_data` | 明文：提示词、工具输入、工具输出、助手最终回复（视 harness 是否提供） |
+| `id` `project_id` `session_id` `turn_id` | HMAC-SHA256 with a per-device random salt. Raw ids and project paths never leave the machine and cannot be linked across devices. |
+| `event` `observed_at` `source` `privacy_mode` `synthetic` | Metadata; `source` is `codex_hook` / `claude_code_hook` / `cursor_hook` / `gemini_hook` / `opencode_hook` |
+| `tool_category` | PostToolUse only: `shell` / `edit` / `read` / `web` / `agent` / `other`, never the tool name |
+| `task_data` | Plain text: the prompt, tool input, tool output and the final assistant reply, where the harness provides them |
 
-永远不会上传：会话记录文件（`transcript_path` 只是路径，从不打开）、`cwd`、模型名、用户邮箱、三条控制指令本身、未绑定目录下的事件、已暂停会话的事件、单条超过 1 MB 的事件（接收服务返回 413 后直接跳过）。`full_task` 下工具输出里的私有代码或凭据会原样上传，敏感任务请先 `tracekin off`。
+Never uploaded: the transcript file (`transcript_path` is only a path and is never opened), `cwd`, the model name, the user's email, the three control commands themselves, events from unbound directories, events from paused sessions, and any single event over 1 MB (the receiver answers 413 and the event is skipped). In `full_task` mode, private code or credentials returned by tools are uploaded as they are; send `tracekin off` before a sensitive task.
 
-现阶段的接收服务只做校验和回执，不持久化事件；"接收服务已确认"仅代表送达，不代表质量验收，也不构成训练数据或奖励的承诺。
+Today's receiver only validates and acknowledges; it does not persist events. "Acknowledged by the receiver" means delivered, not reviewed, and is not a promise of training data or rewards.
 
-## 状态字段速查
+## Status fields at a glance
 
-`tracekin status` 与 MCP `tracekin_status` 返回同一份结构：
+`tracekin status` and the MCP `tracekin_status` tool return the same structure:
 
-| 字段 | 含义 |
+| Field | Meaning |
 |------|------|
-| `sharing_state` | `awaiting_session_start` 无数据库 · `binding_project` 已开启未绑定 · `enabled` 当前项目已授权 · `denied` 显式全局拒绝 |
-| `hint` | 对应状态的下一步操作 |
-| `data_dir` / `legacy_data_dir` | 实际读取的目录；后者非空表示旧目录待采用 |
-| `migration_pending` | 数据库仍是旧版本状态，下一次 SessionStart 迁移 |
-| `counts` / `session_controls.paused_sessions` | 待发送、已确认、已暂停会话数 |
-| `missing_tables` / `initialized` | 旧版 schema 诊断 |
+| `sharing_state` | `awaiting_session_start` no database · `binding_project` enabled but no current project bound · `enabled` current project authorized · `denied` explicit global revoke |
+| `hint` | The next step for that state |
+| `data_dir` / `legacy_data_dir` | The directory actually read; the latter is set while an older directory is still waiting to be adopted |
+| `migration_pending` | The database is still in a pre-upgrade state; the next `SessionStart` migrates it |
+| `counts` / `session_controls.paused_sessions` | Pending, acknowledged and paused-session counts |
+| `missing_tables` / `initialized` | Legacy schema diagnostics |
 
-面板地址每次启动随机，在数据目录读取：
+The dashboard address is random on every start; read it from the data directory:
 
 ```bash
 python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/runtime.json")))["url"])'
 ```
 
-## 排错速查
+## Troubleshooting at a glance
 
-| 现象 | 处理 |
+| Symptom | What to do |
 |------|------|
-| `awaiting_session_start` | hooks 未信任或未从项目目录新建会话 |
-| `binding_project` 且 `migration_pending` | 旧版本数据目录分裂，升级到 0.4.4+ 并新建会话 |
-| `denied` | 曾调用 `tracekin_deny`（或 0.4.1 的"清除本地记录"），调用 `tracekin_allow` |
-| 面板"发送失败" | 看"最近错误"：`HTTP 401` 接收服务要求令牌、`HTTP 413` 单条过大已跳过、`URLError` 网络不通 |
-| `tracekin off` 被上传 | 0.4.5 及更早要求逐字匹配，升级 |
-| 面板打不开 | `runtime.json` 过期，新建会话即可重新拉起 companion |
+| `awaiting_session_start` | Hooks are not trusted, or no new session was started from a project directory |
+| `binding_project` with `migration_pending` | Older versions split the data directory; upgrade to 0.4.4+ and start a new session |
+| `denied` | `tracekin_deny` was called once (or 0.4.1's "clear local records" ran); call `tracekin_allow` |
+| Dashboard shows a delivery failure | Read "last error": `HTTP 401` the receiver wants a token, `HTTP 413` one event was too large and was skipped, `URLError` no network |
+| `tracekin off` was uploaded | 0.4.5 and earlier required an exact match; upgrade |
+| Dashboard does not open | `runtime.json` is stale; a new session restarts the companion |
 
-更细的排查与 hook 字段日志（`touch ~/.tracekin/debug-hooks`）见 [plugins/tracekin/README.md](plugins/tracekin/README.md)。
+Deeper diagnostics and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`) are described in [plugins/tracekin/README.md](plugins/tracekin/README.md) (Chinese).
 
-## 仓库结构
+## Repository layout
 
 ```text
 .
 ├── .agents/plugins/marketplace.json   Codex marketplace
 ├── .claude-plugin/marketplace.json    Claude Code marketplace
-├── gemini-extension.json  hooks/     Gemini CLI 扩展清单与 hooks（扩展根即仓库根）
+├── gemini-extension.json  hooks/     Gemini CLI extension manifest and hooks (the repo root is the extension)
 ├── plugins/tracekin/
-│   ├── .codex-plugin/  .claude-plugin/  .cursor-plugin/   三份插件清单
-│   ├── hooks/hooks.json     Codex 与 Claude Code 共用的 hooks
-│   ├── codex/mcp.json  .mcp.json  cursor/  gemini/       各 harness 的 MCP 配置与包装脚本
-│   ├── opencode/tracekin.js  OpenCode 插件（把事件总线翻译成同样的 hook 调用）
-│   ├── scripts/tracekin.py  serve.py  mcp_server.py      核心 · companion · MCP
-│   ├── scripts/test_tracekin.py  integration_smoke.py   测试
-│   ├── assets/              本地面板
-│   └── skills/tracekin/     技能说明
+│   ├── .codex-plugin/  .claude-plugin/  .cursor-plugin/   plugin manifests
+│   ├── hooks/hooks.json     hooks shared by Codex and Claude Code
+│   ├── codex/mcp.json  .mcp.json  cursor/  gemini/       per-harness MCP configs and wrapper scripts
+│   ├── opencode/tracekin.js  OpenCode plugin (translates the event bus into the same hook calls)
+│   ├── scripts/tracekin.py  serve.py  mcp_server.py      core · companion · MCP
+│   ├── scripts/test_tracekin.py  integration_smoke.py   tests
+│   ├── assets/              local dashboard
+│   └── skills/tracekin/     skill instructions
 ├── CHANGELOG.md
-└── REMOTE-TEST.md           跨电脑验收流程
+└── REMOTE-TEST.md           cross-machine acceptance walkthrough
 ```
 
-## 开发与测试
+## Development and tests
 
-标准库即可，无需安装依赖：
+Standard library only, nothing to install:
 
 ```bash
 python3 -m py_compile plugins/tracekin/scripts/tracekin.py plugins/tracekin/scripts/mcp_server.py plugins/tracekin/scripts/test_tracekin.py
@@ -147,21 +149,22 @@ python3 plugins/tracekin/scripts/test_tracekin.py
 python3 plugins/tracekin/scripts/integration_smoke.py
 ```
 
-OpenCode 插件的测试用 Node（或 Bun）驱动真实的 `opencode/tracekin.js`，机器上没有 Node 时会自动跳过。
+The OpenCode plugin tests drive the real `opencode/tracekin.js` with Node (or Bun) and are skipped when neither is on the PATH.
 
-本地演示（本机接收器，零外发）：
+Local demo with a loopback receiver and nothing leaving the machine:
 
 ```bash
 python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --project "$PWD"
 ```
 
-发布前用 `claude plugin validate --strict plugins/tracekin` 和 `claude plugin validate .` 校验清单。版本号写在 `scripts/tracekin.py` 的 `PLUGIN_VERSION` 与三份 `plugin.json`、`marketplace.json` 中，测试会检查一致性；格式 `X.Y.Z+build.<时间戳>`，时间戳用于让插件缓存识别新版本。
+Before publishing, validate the manifests with `claude plugin validate --strict plugins/tracekin` and `claude plugin validate .`. The version lives in `PLUGIN_VERSION` in `scripts/tracekin.py`, the three `plugin.json` files, `marketplace.json` and `gemini-extension.json`; the tests check that they agree. The format is `X.Y.Z+build.<timestamp>`, where the timestamp lets plugin caches notice a new build.
 
-## 文档
+## Documentation
 
-- [plugins/tracekin/README.md](plugins/tracekin/README.md)：技术参考（运行细节、默认策略、投递、各 harness 差异、排错）
-- [REMOTE-TEST.md](REMOTE-TEST.md)：跨电脑完整验收流程
-- [CHANGELOG.md](CHANGELOG.md)：版本记录
+- [plugins/tracekin/README.md](plugins/tracekin/README.md): technical reference in Chinese (runtime details, default policy, delivery, per-harness differences, troubleshooting)
+- [REMOTE-TEST.md](REMOTE-TEST.md): cross-machine acceptance walkthrough (Chinese)
+- [CHANGELOG.md](CHANGELOG.md): release history (Chinese)
+- [README.zh-CN.md](README.zh-CN.md): this page in Chinese
 
 ## License
 

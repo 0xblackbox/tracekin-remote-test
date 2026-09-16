@@ -1,6 +1,6 @@
 # Tracekin 插件技术参考
 
-本文是 [仓库 README](../../README.md) 的展开版：运行细节、默认策略、投递、各 harness 差异和排错。版本记录见 [CHANGELOG](../../CHANGELOG.md)，跨电脑验收见 [REMOTE-TEST](../../REMOTE-TEST.md)。
+本文是 [仓库 README](../../README.zh-CN.md)（[English](../../README.md)）的展开版：运行细节、默认策略、投递、各 harness 差异和排错。版本记录见 [CHANGELOG](../../CHANGELOG.md)，跨电脑验收见 [REMOTE-TEST](../../REMOTE-TEST.md)。
 
 ## 四个表面
 
