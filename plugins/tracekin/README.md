@@ -42,7 +42,7 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
-Version `0.4.1` enables syncing automatically after installation, binds projects on SessionStart, keeps `tracekin off` as the normal per-session privacy control, and makes read-only status queries safe.
+Version `0.4.2` enables syncing automatically after installation, binds projects on SessionStart, keeps `tracekin off` as the normal per-session privacy control, and makes read-only status queries safe for both read-only files and legacy databases missing newer tables.
 
 It does **not** claim that activity metadata is a useful training corpus, that a task is high quality, or that a token is owed. A later data product needs a separately consented human-reviewed sample lane and a published reward formula.
 
@@ -123,5 +123,5 @@ Tracekin remote smoke test: hooks
 - 面板显示“仅本机演示 · 零外发”：你打开的是 demo，关闭它并使用 `SessionStart` 启动的生产面板；
 - 没有任何事件：重启 Codex，确认新会话已启用 Tracekin、Hooks 已信任，并确认会话工作目录是目标项目；敏感会话若之前输入过 `tracekin off`，先输入 `tracekin on`；
 - 项目不匹配：从目标项目新建会话，让 `SessionStart` 重新识别当前目录；
-- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.1`；
+- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.2`；
 - 本机面板没有远程电脑数据：这是预期行为；本地面板只显示当前电脑的本地发送队列和回执。

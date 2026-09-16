@@ -13,7 +13,7 @@ from tracekin import PLATFORM_ENDPOINT, PLUGIN_VERSION, Store
 
 
 def main():
-    assert PLUGIN_VERSION == "0.4.1+codex.20260916125315"
+    assert PLUGIN_VERSION == "0.4.2+codex.20260916051251"
     with tempfile.TemporaryDirectory(prefix="tracekin-test-") as d:
         root = Path(d) / "project"; root.mkdir()
         absent = Path(d) / "absent"
@@ -38,6 +38,22 @@ def main():
         readonly_snapshot = store.snapshot()
         assert readonly_snapshot["config"]["sharing_enabled"] is True
         store.prune = original_prune
+        # A legacy/read-only database may have been created before the
+        # session_overrides table existed. Status remains diagnostic and does
+        # not attempt to repair the file.
+        legacy_db = Path(d) / "legacy-status"
+        legacy_db.mkdir(mode=0o700)
+        legacy_file = legacy_db / "tracekin.sqlite3"
+        with sqlite3.connect(legacy_file) as c:
+            cfg = {"consent_granted": True, "consent_decision": "allowed", "sharing_enabled": True, "share_all": True, "projects": [str(root)], "active_project": str(root), "endpoint": PLATFORM_ENDPOINT, "endpoint_token": "", "use_existing_pet": True, "pet": {"name": "Trace", "concept": ""}, "salt": "00" * 32, "demo": False}
+            c.execute("CREATE TABLE config (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+            c.execute("INSERT INTO config VALUES(1, ?)", (json.dumps(cfg),))
+        legacy_file.chmod(0o400)
+        legacy_db.chmod(0o500)
+        legacy_status = Store(legacy_db, create=False).snapshot()
+        assert legacy_status["initialized"] is False
+        assert legacy_status["counts"] == {"pending": 0, "sent": 0}
+        assert legacy_status["session_controls"]["paused_sessions"] == 0
         assert store.configure({"use_existing_pet": False})["config"]["use_existing_pet"] is False
         assert store.configure({"use_existing_pet": True})["config"]["use_existing_pet"] is True
         configured = store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT})

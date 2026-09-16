@@ -23,7 +23,7 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.1+codex.20260916125315"
+PLUGIN_VERSION = "0.4.2+codex.20260916051251"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 SESSION_COMMANDS = {
@@ -161,27 +161,69 @@ class Store:
 
     def snapshot(self):
         with self.connect() as c:
+            initialized = True
             # Status is a read path. Sandboxed/plugin-hosted readers can open
             # the SQLite file read-only, so housekeeping must not prevent a
             # status/MCP response from being returned.
             try:
                 self.prune(c)
             except sqlite3.OperationalError as error:
-                if "readonly" not in str(error).lower() and "read-only" not in str(error).lower():
+                message = str(error).lower()
+                if "readonly" not in message and "read-only" not in message and "no such table" not in message:
                     raise
-            cfg = self.read_config(c)
+            try:
+                cfg = self.read_config(c)
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error).lower():
+                    raise
+                # An interrupted first-run migration can leave a database
+                # directory and file behind without the config table. Status
+                # must remain a read-only diagnostic instead of failing or
+                # inventing a project scope.
+                initialized = False
+                cfg = {
+                    "consent_granted": True,
+                    "consent_decision": "allowed",
+                    "sharing_enabled": False,
+                    "share_all": True,
+                    "projects": [],
+                    "active_project": "",
+                    "endpoint": "",
+                    "use_existing_pet": True,
+                    "pet": {"name": "Trace", "concept": ""},
+                    "demo": self.demo,
+                }
             cfg.pop("salt", None)
             cfg.pop("endpoint_token", None)
-            counts = {r[0]: r[1] for r in c.execute("SELECT status, count(*) FROM events GROUP BY status")}
-            paused_sessions = c.execute("SELECT count(*) FROM session_overrides WHERE enabled=0").fetchone()[0]
-            events = [{"payload": json.loads(r["payload"]), "status": r["status"]} for r in c.execute("SELECT * FROM events ORDER BY created DESC LIMIT 12")]
+            try:
+                counts = {r[0]: r[1] for r in c.execute("SELECT status, count(*) FROM events GROUP BY status")}
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error).lower():
+                    raise
+                initialized = False
+                counts = {}
+            try:
+                paused_sessions = c.execute("SELECT count(*) FROM session_overrides WHERE enabled=0").fetchone()[0]
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error).lower():
+                    raise
+                initialized = False
+                paused_sessions = 0
+            try:
+                rows = c.execute("SELECT * FROM events ORDER BY created DESC LIMIT 12")
+                events = [{"payload": json.loads(r["payload"]), "status": r["status"]} for r in rows]
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error).lower():
+                    raise
+                initialized = False
+                events = []
         active = cfg.get("active_project", "") if isinstance(cfg.get("active_project", ""), str) else ""
         configured_projects = cfg.get("projects", []) if isinstance(cfg.get("projects", []), list) else []
         try:
             authorized = bool(active and cfg.get("consent_granted") and cfg.get("sharing_enabled") and any(Path(active) == Path(p) or Path(p) in Path(active).parents for p in configured_projects if isinstance(p, str)))
         except (TypeError, ValueError):
             authorized = False
-        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "current_project_authorized": authorized, "platform": {"name": "Tracekin Cloud", "fixed_endpoint": not cfg.get("demo")}, "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]}, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof"}
+        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "current_project_authorized": authorized, "platform": {"name": "Tracekin Cloud", "fixed_endpoint": not cfg.get("demo")}, "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]}, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof", "initialized": initialized}
 
     @staticmethod
     def validate_project(project):

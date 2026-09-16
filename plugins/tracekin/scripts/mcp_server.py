@@ -56,11 +56,16 @@ def current_project(store):
 
 
 def call_tool(name):
-    store = Store(home_dir())
-    if name == "tracekin_status":
-        return store.snapshot()
     if name == "tracekin_data_contract":
         return {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "scope_policy": "projects_seen_by_current_install", "transcript_policy": "never opened implicitly", "default_policy": "enabled_on_install; tracekin off pauses only the current session", "consent_control": "install_default_with_explicit_global_revoke", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
+    if name == "tracekin_status":
+        db = home_dir() / "tracekin.sqlite3"
+        # Status is strictly read-only. Do not run Store's schema/migration
+        # writes when the host opened the existing database read-only.
+        if not db.exists():
+            return empty_status()
+        return Store(home_dir(), create=False).snapshot()
+    store = Store(home_dir())
     if name == "tracekin_allow":
         return store.allow_active_project(current_project(store))
     if name == "tracekin_deny":
@@ -84,10 +89,7 @@ def main():
             elif method == "tools/call":
                 name = req.get("params", {}).get("name")
                 try:
-                    if name == "tracekin_status" and not (home_dir() / "tracekin.sqlite3").exists():
-                        payload = empty_status()
-                    else:
-                        payload = call_tool(name)
+                    payload = call_tool(name)
                 except (OSError, TypeError, ValueError, InputError, sqlite3.Error) as error:
                     out = result(request_id, {"isError": True, "content": [{"type": "text", "text": str(error)}]})
                     print(json.dumps(out, ensure_ascii=False), flush=True); continue
