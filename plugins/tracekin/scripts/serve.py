@@ -24,7 +24,13 @@ class App:
         self.token = secrets.token_urlsafe(32)
         self.demo = demo
         self.project = str(Path(project or os.getcwd()).resolve())
-        self.store.set_active_project(self.project)
+        try:
+            self.store.set_active_project(self.project)
+        except InputError:
+            # Launched from a directory that is not a project (home, root, or
+            # missing). Keep serving the scope already recorded instead of
+            # refusing to start; the next SessionStart from a project binds it.
+            self.project = self.store.snapshot()["config"].get("active_project") or self.project
         self.stop = threading.Event()
         self.last_delivery = "idle"
         self.delivery_error = None

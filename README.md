@@ -28,4 +28,4 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
-升级后应显示版本 `0.5.0+build.<cachebuster>`；重启 Codex Desktop 后，在 Hooks 页面重新审阅当前定义，并从项目目录新建会话让 `SessionStart` 完成迁移和项目绑定。
+升级后应显示版本 `0.5.1+build.<cachebuster>`；重启 Codex Desktop 后，在 Hooks 页面重新审阅当前定义，并从项目目录新建会话让 `SessionStart` 完成迁移和项目绑定。

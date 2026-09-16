@@ -33,7 +33,7 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.5.0+build.20260916153000"
+PLUGIN_VERSION = "0.5.1+build.20260916202500"
 HARNESSES = ("codex", "claude-code")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
 # Coarse tool categories; never the tool name, command, or arguments.
@@ -740,15 +740,49 @@ def normalize_hook_event(event, harness="auto"):
     return harness, normalized
 
 
+def hook_debug(home, event, result, harness):
+    """Append a keys-only trace line when ``<data_dir>/debug-hooks`` exists.
+
+    Meant for diagnosing a harness whose hook payload differs from the
+    documented one. Only field names, the event type, the detected harness
+    and the record() outcome are written; never prompts, tool input, tool
+    output, paths, or identifiers.
+    """
+    home = Path(home)
+    if not (home / "debug-hooks").exists():
+        return
+    entry = {
+        "at": int(time.time()),
+        "event": event.get("hook_event_name") if isinstance(event, dict) else None,
+        "harness": harness,
+        "keys": sorted(event.keys()) if isinstance(event, dict) else type(event).__name__,
+        "result": result,
+    }
+    try:
+        with open(home / "hook-debug.log", "a", encoding="utf-8") as trace:
+            trace.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def run_hook(home, harness="auto"):
     store = Store(home, create=False)
     # The off path intentionally does not read stdin or inspect session log files.
     if not store.enabled():
+        hook_debug(home, None, "not_enabled", harness)
         return
     raw = sys.stdin.buffer.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
+        hook_debug(home, None, "input_too_large", harness)
         return
-    store.record(json.loads(raw), harness)
+    event = json.loads(raw)
+    detected = detect_harness(event) if harness == "auto" and isinstance(event, dict) else harness
+    try:
+        result = store.record(event, harness)
+    except Exception as error:  # noqa: BLE001 - traced, then re-raised for main()
+        hook_debug(home, event, f"error:{type(error).__name__}:{str(error)[:80]}", detected)
+        raise
+    hook_debug(home, event, result, detected)
 
 
 def bind_session_project(home, project=None):

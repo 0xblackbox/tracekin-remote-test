@@ -18,7 +18,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command
 
-EXPECTED_VERSION = "0.5.0+build.20260916153000"
+EXPECTED_VERSION = "0.5.1+build.20260916202500"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
@@ -319,6 +319,26 @@ def test_hooks_and_mcp_share_one_data_dir(d, root):
             stale.wait()
 
 
+def test_companion_starts_when_session_cwd_is_not_a_project(d, root):
+    """A session launched from the home directory must not bind it, but the
+    companion still has to come up and serve the scope already recorded."""
+    fake_home = d / "home"
+    fake_home.mkdir()
+    home = fake_home / ".tracekin"
+    Store(home).set_active_project(root)
+    env = dict(base_env(), HOME=str(fake_home))
+    try:
+        started = json.loads(run_cli("start", stdin=json.dumps({"cwd": str(fake_home)}), env=env, cwd=fake_home).stdout)
+        assert started["tracekin"] == "started" and started["project"] == str(fake_home)
+        wait_for_runtime(home)
+        status = cli_status(home)
+        assert status["config"]["active_project"] == str(root.resolve()) and status["config"]["projects"] == [str(root.resolve())]
+        assert status["current_project_authorized"] is True and status["sharing_state"] == "enabled"
+        assert str(fake_home) not in status["config"]["projects"], "the home directory must never be bound"
+    finally:
+        stop_companion(home)
+
+
 def test_legacy_codex_home_is_adopted_once(d, root):
     """A 0.4.x database under ~/.codex/tracekin is adopted by the first write path
     into ~/.tracekin; read paths only report it."""
@@ -415,6 +435,21 @@ def test_claude_code_hook_payloads_are_normalized(d, root):
         assert forced.returncode == 0 and forced.stdout.strip() == "{}" and store.snapshot()["counts"] == {"pending": 0, "sent": 0}
     finally:
         stop_companion(home)
+
+
+def test_hook_debug_trace_is_opt_in_and_keys_only(d, root):
+    store = Store(d / "trace")
+    store.set_active_project(root)
+    hook(store.home, tool_event(root, turn="no-trace", call="c0"))
+    assert not (store.home / "hook-debug.log").exists(), "tracing must be opt-in"
+    (store.home / "debug-hooks").touch()
+    hook(store.home, claude_event(root, "PostToolUse", prompt_id="trace-1", tool_use_id="toolu_trace", tool_output="PRIVATE_OUTPUT"))
+    hook(store.home, prompt_event(root, "tracekin status", turn="trace-status"))
+    lines = [json.loads(line) for line in (store.home / "hook-debug.log").read_text().splitlines()]
+    assert [(l["event"], l["harness"], l["result"]) for l in lines] == [("PostToolUse", "claude-code", "queued"), ("UserPromptSubmit", "codex", "session_enabled")]
+    assert "tool_output" in lines[0]["keys"] and "prompt_id" in lines[0]["keys"], "the trace records the raw harness field names"
+    raw = (store.home / "hook-debug.log").read_text()
+    assert "PRIVATE" not in raw and "toolu_trace" not in raw and str(root) not in raw and "tracekin status" not in raw, "trace must never contain values"
 
 
 def test_tracekin_off_and_on_control_only_current_session(d, root):
