@@ -1,6 +1,6 @@
 {
   "name": "tracekin",
-  "version": "0.6.1+build.20260917024836",
+  "version": "0.7.0+build.20260917025521",
   "description": "A local-first coding-agent companion with install-default syncing, visible receipts, and per-session pause commands. Runs under Codex and Claude Code.",
   "author": {
     "name": "Local developer"

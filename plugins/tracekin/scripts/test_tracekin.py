@@ -18,7 +18,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.6.1+build.20260917024836"
+EXPECTED_VERSION = "0.7.0+build.20260917025521"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
@@ -204,6 +204,19 @@ def test_version_synced_with_manifests():
             assert wrapper.is_file() and os.access(wrapper, os.X_OK), entry
             assert wrapper.name == ("start.sh" if event == "sessionStart" else "hook.sh")
     assert "${CURSOR_PLUGIN_ROOT}" in json.loads((PLUGIN_DIR / cursor["mcpServers"]).read_text())["mcpServers"]["tracekin"]["args"][0]
+    # Gemini CLI extension: manifest at the repo root, hooks/hooks.json with ${extensionPath} wrappers, ms timeouts.
+    repo = PLUGIN_DIR.parent.parent
+    gemini = json.loads((repo / "gemini-extension.json").read_text())
+    assert gemini["name"] == "tracekin" and gemini["version"] == PLUGIN_VERSION
+    assert "${extensionPath}" in gemini["mcpServers"]["tracekin"]["args"][0] and gemini["mcpServers"]["tracekin"]["args"][0].endswith("mcp_server.py")
+    gemini_hooks = json.loads((repo / "hooks" / "hooks.json").read_text())["hooks"]
+    assert set(gemini_hooks) == {"SessionStart", "BeforeAgent", "AfterTool", "AfterAgent"}
+    for event, groups in gemini_hooks.items():
+        for hook_entry in groups[0]["hooks"]:
+            assert hook_entry["command"].startswith("${extensionPath}/plugins/tracekin/gemini/") and hook_entry["timeout"] >= 1000, hook_entry
+            wrapper = repo / hook_entry["command"].replace("${extensionPath}/", "")
+            assert wrapper.is_file() and os.access(wrapper, os.X_OK), wrapper
+            assert wrapper.name == ("start.sh" if event == "SessionStart" else "hook.sh")
 
 
 def test_cursor_plugin_wrappers_run_from_any_directory(d, root):
@@ -440,7 +453,7 @@ def test_claude_code_hook_payloads_are_normalized(d, root):
     assert detect_harness({"prompt_id": "p"}) == "claude-code" and detect_harness({"turn_id": "t"}) == "codex" and detect_harness({}) == "codex"
     harness, normalized = normalize_hook_event(claude_event(root, "PostToolUse"))
     assert harness == "claude-code" and normalized["turn_id"] == "prompt-1" and normalized["tool_response"] == "PRIVATE_OUTPUT"
-    assert normalize_hook_event(claude_event(root, "Stop", prompt_id=None))[1]["turn_id"].startswith("t-")
+    assert "turn_id" not in normalize_hook_event(claude_event(root, "Stop", prompt_id=None))[1], "without prompt_id the store assigns the turn"
     assert normalize_hook_event({"turn_id": "codex-turn", "hook_event_name": "Stop"})[0] == "codex"
     claude_env = dict(base_env(), TRACEKIN_HOME=str(d / "claude"), CLAUDE_PLUGIN_ROOT=str(PLUGIN_DIR), CLAUDE_PLUGIN_DATA=str(d / "claude-data"), CLAUDE_SESSION_ID="claude-session", CLAUDE_PROJECT_DIR=str(root))
     home = d / "claude"
@@ -568,6 +581,114 @@ def test_cursor_installer_merges_and_uninstalls_cleanly(d, root):
     assert hooks["hooks"] == {"beforeSubmitPrompt": [{"command": "./other.sh"}], "afterFileEdit": [{"command": "./fmt.sh"}]}
     assert json.loads((cursor_home / "mcp.json").read_text())["mcpServers"] == {"other": {"type": "stdio", "command": "other"}}
     assert not (cursor_home / "tracekin").exists()
+
+
+def gemini_event(root, kind, **fields):
+    event = {"session_id": "gemini-session-secret", "transcript_path": "/private/gemini/transcript.json", "cwd": str(root), "hook_event_name": kind, "timestamp": "2026-09-17T02:00:00.000Z"}
+    if kind == "BeforeAgent":
+        event["prompt"] = "PRIVATE_PROMPT"
+    elif kind == "AfterTool":
+        event.update(tool_name="run_shell_command", tool_input={"command": "PRIVATE_COMMAND"}, tool_response={"output": "PRIVATE_OUTPUT"})
+    elif kind == "AfterAgent":
+        event.update(prompt="PRIVATE_PROMPT", prompt_response="PRIVATE_ANSWER", stop_hook_active=False)
+    elif kind == "SessionStart":
+        event["source"] = "startup"
+    event.update(fields)
+    return event
+
+
+def test_gemini_hook_payloads_get_session_turns(d, root):
+    assert detect_harness(gemini_event(root, "AfterTool")) == "gemini" and detect_harness(gemini_event(root, "AfterAgent")) == "gemini"
+    harness, normalized = normalize_hook_event(gemini_event(root, "AfterAgent"))
+    assert harness == "gemini" and normalized["hook_event_name"] == "Stop" and normalized["last_assistant_message"] == "PRIVATE_ANSWER" and "prompt" not in normalized and "turn_id" not in normalized
+    tool = normalize_hook_event(gemini_event(root, "AfterTool"))[1]
+    assert tool["hook_event_name"] == "PostToolUse" and tool["tool_use_id"].endswith(":run_shell_command") and tool["tool_response"] == {"output": "PRIVATE_OUTPUT"}
+    assert tool_category("run_shell_command") == "shell" and tool_category("write_file") == "edit" and tool_category("search_file_content") == "read" and tool_category("google_web_search") == "web"
+    store = Store(d / "gemini")
+    store.set_active_project(root)
+    # Turn 1: prompt, tool, stop share one turn id; turn 2 starts with the next prompt.
+    assert store.record(gemini_event(root, "BeforeAgent")) == "queued"
+    assert store.record(gemini_event(root, "AfterTool")) == "queued"
+    assert store.record(gemini_event(root, "AfterAgent")) == "queued"
+    assert store.record(gemini_event(root, "BeforeAgent", timestamp="2026-09-17T02:01:00.000Z")) == "queued", "an identical second prompt is a new turn, not a duplicate"
+    assert store.record(gemini_event(root, "AfterAgent", timestamp="2026-09-17T02:01:05.000Z")) == "queued"
+    events = [e["payload"] for e in store.snapshot()["events"]]
+    assert store.snapshot()["counts"] == {"pending": 5, "sent": 0} and all(p["source"] == "gemini_hook" for p in events)
+    by_turn = {}
+    for p in events:
+        by_turn.setdefault(p["turn_id"], []).append(p["event"])
+    assert len(by_turn) == 2 and sorted(len(v) for v in by_turn.values()) == [2, 3]
+    stop = next(p for p in events if p["event"] == "Stop")
+    assert stop["task_data"] == {"last_assistant_message": "PRIVATE_ANSWER"}
+    post = next(p for p in events if p["event"] == "PostToolUse")
+    assert post["tool_category"] == "shell" and post["task_data"]["tool_response"] == {"output": "PRIVATE_OUTPUT"}
+    raw = store.db.read_bytes()
+    assert b"gemini-session-secret" not in raw and b"/private/gemini" not in raw and b"turn-1" not in raw
+    # Another session keeps its own counter; a re-fired identical tool event is a duplicate.
+    assert store.record(gemini_event(root, "BeforeAgent", session_id="other")) == "queued"
+    assert store.record(gemini_event(root, "AfterTool", session_id="other")) == "queued"
+    assert store.record(gemini_event(root, "AfterTool", session_id="other")) == "duplicate"
+    # Legacy database without the counter table still records every event.
+    legacy = d / "gemini-legacy"
+    db = write_legacy_db(legacy, legacy_config(root, consent_granted=True, consent_decision="allowed", sharing_enabled=True, share_all=True), FULL_SCHEMA)
+    old = Store(legacy, create=False)
+    assert old.record(gemini_event(root, "BeforeAgent")) == "queued" and old.record(gemini_event(root, "AfterAgent")) == "queued"
+    assert tables_in(db) == {"config", "events", "session_overrides"} and old.snapshot()["counts"] == {"pending": 2, "sent": 0}
+    # Session controls from a Gemini prompt; the CLI answers {} for every event.
+    env = dict(base_env(), TRACEKIN_HOME=str(d / "gemini"), GEMINI_PROJECT_DIR=str(root), GEMINI_SESSION_ID="gemini-session-secret")
+    off = run_cli("hook", "--harness", "gemini", stdin=json.dumps(gemini_event(root, "BeforeAgent", prompt="`tracekin off`")), env=env, cwd=root)
+    assert off.returncode == 0 and json.loads(off.stdout) == {} and store.snapshot()["session_controls"]["paused_sessions"] == 1
+    assert store.record(gemini_event(root, "AfterTool", timestamp="x")) == "session_disabled"
+    assert store.record(gemini_event(root, "BeforeAgent", prompt="tracekin on")) == "session_enabled"
+    auto = run_cli("hook", stdin=json.dumps(gemini_event(root, "AfterTool", timestamp="2026-09-17T02:02:00.000Z")), env=env, cwd=root)
+    # `tracekin off` dropped this session's five pending events; the other session's two remain, plus this one.
+    assert auto.returncode == 0 and json.loads(auto.stdout) == {} and store.snapshot()["counts"]["pending"] == 3, store.snapshot()["counts"]
+    # SessionStart through the extension wrapper, from an unrelated directory.
+    home = d / "gemini-ext"
+    elsewhere = d / "elsewhere"
+    elsewhere.mkdir()
+    wrapper_env = dict(base_env(), TRACEKIN_HOME=str(home), GEMINI_PROJECT_DIR=str(root))
+    try:
+        started = subprocess.run([str(PLUGIN_DIR / "gemini" / "start.sh")], input=json.dumps(gemini_event(root, "SessionStart")), text=True, capture_output=True, env=wrapper_env, cwd=elsewhere, timeout=30)
+        assert started.returncode == 0 and json.loads(started.stdout) == {}, started.stderr
+        settle_companion(home)
+        assert Store(home, create=False).snapshot()["current_project_authorized"] is True
+        hooked = subprocess.run([str(PLUGIN_DIR / "gemini" / "hook.sh")], input=json.dumps(gemini_event(root, "BeforeAgent")), text=True, capture_output=True, env=wrapper_env, cwd=elsewhere, timeout=30)
+        assert hooked.returncode == 0 and json.loads(hooked.stdout) == {} and Store(home, create=False).snapshot()["counts"] == {"pending": 1, "sent": 0}
+    finally:
+        stop_companion(home)
+
+
+def test_gemini_installer_merges_settings_and_refuses_unparseable_files(d, root):
+    gemini_home = d / "dot-gemini"
+    gemini_home.mkdir()
+    (gemini_home / "settings.json").write_text(json.dumps({"theme": "dark", "hooks": {"BeforeAgent": [{"hooks": [{"type": "command", "command": "./other.sh"}]}], "SessionEnd": [{"hooks": [{"type": "command", "command": "./bye.sh"}]}]}, "mcpServers": {"other": {"command": "other"}}}))
+    for _ in range(2):  # idempotent
+        assert json.loads(run_cli("install-gemini", "--gemini-home", gemini_home).stdout)["tracekin"] == "installed"
+    settings = json.loads((gemini_home / "settings.json").read_text())
+    assert settings["theme"] == "dark" and settings["mcpServers"]["other"] == {"command": "other"} and settings["mcpServers"]["tracekin"]["args"][0].endswith("mcp_server.py")
+    hooks = settings["hooks"]
+    assert set(hooks) == {"BeforeAgent", "SessionEnd", "SessionStart", "AfterTool", "AfterAgent"}
+    assert hooks["SessionEnd"] == [{"hooks": [{"type": "command", "command": "./bye.sh"}]}]
+    assert hooks["BeforeAgent"][0] == {"hooks": [{"type": "command", "command": "./other.sh"}]} and len(hooks["BeforeAgent"]) == 2
+    ours = hooks["BeforeAgent"][1]["hooks"][0]
+    assert ours["command"].endswith("/tracekin/hook.sh") and ours["timeout"] == 3000 and ours["name"] == "tracekin"
+    assert hooks["SessionStart"][0]["hooks"][0]["command"].endswith("/tracekin/start.sh") and hooks["SessionStart"][0]["hooks"][0]["timeout"] == 5000
+    home = d / "gemini-installed"
+    Store(home).set_active_project(root)
+    result = subprocess.run([str(gemini_home / "tracekin" / "hook.sh")], input=json.dumps(gemini_event(root, "BeforeAgent")), text=True, capture_output=True, env=dict(base_env(), TRACEKIN_HOME=str(home)), cwd=root, timeout=30)
+    assert result.returncode == 0 and json.loads(result.stdout) == {} and Store(home, create=False).snapshot()["counts"] == {"pending": 1, "sent": 0}
+    removed = json.loads(run_cli("uninstall-gemini", "--gemini-home", gemini_home).stdout)
+    assert removed["removed"] == 5
+    settings = json.loads((gemini_home / "settings.json").read_text())
+    assert settings["hooks"] == {"BeforeAgent": [{"hooks": [{"type": "command", "command": "./other.sh"}]}], "SessionEnd": [{"hooks": [{"type": "command", "command": "./bye.sh"}]}]}
+    assert settings["mcpServers"] == {"other": {"command": "other"}} and settings["theme"] == "dark" and not (gemini_home / "tracekin").exists()
+    # A settings file that does not parse (for example JSON with comments) is never clobbered.
+    broken = d / "dot-gemini-broken"
+    broken.mkdir()
+    (broken / "settings.json").write_text('{ // comment\n  "theme": "dark" }')
+    failed = run_cli("install-gemini", "--gemini-home", broken)
+    assert failed.returncode != 0 and (broken / "settings.json").read_text().startswith("{ // comment")
 
 
 def test_hook_debug_trace_is_opt_in_and_keys_only(d, root):
@@ -762,7 +883,7 @@ def test_legacy_without_decision_migrates_to_allowed(d, root):
     migrated = Store(older).snapshot()
     assert_enabled_default(migrated["config"])
     assert migrated["missing_tables"] == [] and migrated["current_project_authorized"] is False
-    assert tables_in(db) == set(TABLES)
+    assert tables_in(db) >= set(TABLES) and "session_turns" in tables_in(db)
     assert bind_session_project(older, root) == str(root.resolve())
     assert Store(older, create=False).snapshot()["current_project_authorized"] is True
     # The pure helper is idempotent once the install default is in place.

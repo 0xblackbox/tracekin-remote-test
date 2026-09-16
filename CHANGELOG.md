@@ -2,6 +2,14 @@
 
 版本格式 `X.Y.Z+build.<时间戳>`（0.4.x 为 `+codex.<时间戳>`），时间戳只用于让插件缓存识别新版本。
 
+## 0.7.0 · 2026-09-17
+
+- 新增 Gemini CLI：`SessionStart` / `BeforeAgent` / `AfterTool` / `AfterAgent` 归一化到共享事件模型，`AfterAgent` 的 `prompt_response` 作为助手回复，`tool_response` 对象原样保留。
+- 没有轮次 ID 的 harness 由数据库按会话计数（新表 `session_turns`）：新提示词开启下一轮，工具与结束事件归入当前轮；旧库缺表时退回逐事件唯一 ID。
+- 两种安装：仓库根即 Gemini 扩展（`gemini-extension.json` + `hooks/hooks.json`，`gemini extensions install <repo>`）；`tracekin.py install-gemini` 合并进 `~/.gemini/settings.json`（幂等、只删自己）。
+- 安装器遇到无法解析的现有配置文件（例如带注释的 JSON）会中止而不是覆盖，Cursor 安装器同样适用。
+- 工具分类新增 Gemini 内置工具名。
+
 ## 0.6.1 · 2026-09-17
 
 - companion 启动时不再对 `127.0.0.1` 做反向 DNS 查询：在反向解析慢的环境（GitHub macOS runner、部分 VPN）下该查询会让 companion 卡住几十秒、迟迟写不出 `runtime.json`。

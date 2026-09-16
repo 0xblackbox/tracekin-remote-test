@@ -1,6 +1,6 @@
 {
   "name": "tracekin",
-  "version": "0.6.1+build.20260917024836",
+  "version": "0.7.0+build.20260917025521",
   "description": "Local-first activity companion: binds the workspace on sessionStart, syncs to Tracekin Cloud by default, shows delivery receipts, and honors `tracekin off` / `tracekin on` / `tracekin status` for the current conversation only.",
   "author": {
     "name": "Local developer"

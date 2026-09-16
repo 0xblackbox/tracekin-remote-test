@@ -22,7 +22,7 @@ jobs:
         run: python3 -m py_compile plugins/tracekin/scripts/tracekin.py plugins/tracekin/scripts/mcp_server.py plugins/tracekin/scripts/serve.py plugins/tracekin/scripts/test_tracekin.py
       - name: Manifests are valid JSON
         run: |
-          for f in plugins/tracekin/.codex-plugin/plugin.json plugins/tracekin/.claude-plugin/plugin.json plugins/tracekin/.cursor-plugin/plugin.json plugins/tracekin/hooks/hooks.json plugins/tracekin/cursor/hooks.json plugins/tracekin/.mcp.json plugins/tracekin/codex/mcp.json plugins/tracekin/cursor/mcp.json .claude-plugin/marketplace.json .agents/plugins/marketplace.json; do
+          for f in plugins/tracekin/.codex-plugin/plugin.json plugins/tracekin/.claude-plugin/plugin.json plugins/tracekin/.cursor-plugin/plugin.json plugins/tracekin/hooks/hooks.json plugins/tracekin/cursor/hooks.json plugins/tracekin/.mcp.json plugins/tracekin/codex/mcp.json plugins/tracekin/cursor/mcp.json .claude-plugin/marketplace.json .agents/plugins/marketplace.json gemini-extension.json hooks/hooks.json; do
             python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f"
           done
       - name: Unit tests

@@ -33,17 +33,18 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.6.1+build.20260917024836"
-HARNESSES = ("codex", "claude-code", "cursor")
+PLUGIN_VERSION = "0.7.0+build.20260917025521"
+HARNESSES = ("codex", "claude-code", "cursor", "gemini")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
-# Cursor names its lifecycle events differently; map them onto the shared shape.
+# Cursor and Gemini CLI name their lifecycle events differently; map them onto the shared shape.
 CURSOR_EVENTS = {"sessionStart": "SessionStart", "beforeSubmitPrompt": "UserPromptSubmit", "postToolUse": "PostToolUse", "stop": "Stop"}
+GEMINI_EVENTS = {"SessionStart": "SessionStart", "BeforeAgent": "UserPromptSubmit", "AfterTool": "PostToolUse", "AfterAgent": "Stop"}
 # Coarse tool categories; never the tool name, command, or arguments.
 TOOL_CATEGORIES = {
-    "Bash": "shell", "exec_command": "shell", "shell": "shell", "Shell": "shell", "run_terminal_cmd": "shell",
-    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "edit_file": "edit", "search_replace": "edit", "write": "edit",
-    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read", "read_file": "read", "list_dir": "read", "grep": "read", "codebase_search": "read", "glob_file_search": "read",
-    "WebFetch": "web", "WebSearch": "web", "web_search": "web", "fetch": "web",
+    "Bash": "shell", "exec_command": "shell", "shell": "shell", "Shell": "shell", "run_terminal_cmd": "shell", "run_shell_command": "shell",
+    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "edit_file": "edit", "search_replace": "edit", "write": "edit", "write_file": "edit", "replace": "edit",
+    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read", "read_file": "read", "list_dir": "read", "grep": "read", "codebase_search": "read", "glob_file_search": "read", "glob": "read", "search_file_content": "read", "list_directory": "read", "read_many_files": "read",
+    "WebFetch": "web", "WebSearch": "web", "web_search": "web", "fetch": "web", "web_fetch": "web", "google_web_search": "web",
     "Task": "agent", "Agent": "agent", "task": "agent",
 }
 # Ordered: "web" must win over "search" (WebSearch), "shell" over "read" (read_shell_output).
@@ -71,6 +72,8 @@ SCHEMA_DDL = (
     "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)",
+    # Per-session turn counter for harnesses whose hooks carry no turn id (Gemini CLI).
+    "CREATE TABLE IF NOT EXISTS session_turns (session_id TEXT PRIMARY KEY, turn INTEGER NOT NULL, updated REAL NOT NULL)",
 )
 SESSION_COMMANDS = {
     "tracekin off": "off",
@@ -334,6 +337,31 @@ class Store:
         # Only write paths (record/deliver) prune; status never does.
         c.execute("DELETE FROM events WHERE created < ?", (time.time() - EVENT_TTL,))
         c.execute("DELETE FROM session_overrides WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
+        try:
+            c.execute("DELETE FROM session_turns WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
+        except sqlite3.OperationalError as error:
+            if "no such table" not in str(error).lower():
+                raise
+
+    @staticmethod
+    def assign_turn(c, session_hash, kind):
+        """Turn id for a harness whose hook payloads carry none.
+
+        A new prompt starts turn N+1 for the session; tool and stop events
+        join the current turn. On a legacy database without the counter
+        table every event gets a unique id instead, so nothing is lost.
+        """
+        try:
+            row = c.execute("SELECT turn FROM session_turns WHERE session_id=?", (session_hash,)).fetchone()
+            current = int(row[0]) if row else 0
+            if kind == "UserPromptSubmit":
+                current += 1
+                c.execute("INSERT OR REPLACE INTO session_turns VALUES (?, ?, ?)", (session_hash, current, time.time()))
+            return f"turn-{current}"
+        except sqlite3.OperationalError as error:
+            if "no such table" not in str(error).lower():
+                raise
+            return "t-" + str(int(time.time() * 1000))
 
     def snapshot(self):
         """Read-only status. Never creates, migrates, prunes, or repairs the database.
@@ -598,6 +626,9 @@ class Store:
             row = c.execute("SELECT enabled FROM session_overrides WHERE session_id=?", (session_hash,)).fetchone()
             if row and row[0] == 0:
                 return "session_disabled"
+            if not event.get("turn_id") and harness != "codex":
+                # Codex always sends turn_id; a payload without one is not Codex's and stays invalid.
+                event["turn_id"] = self.assign_turn(c, session_hash, kind)
             for key in ("turn_id", "cwd"):
                 if not isinstance(event.get(key), str) or not event[key] or len(event[key]) > 4096:
                     return "invalid"
@@ -724,9 +755,12 @@ def send_https(endpoint, payload, endpoint_token=""):
 
 
 def detect_harness(event):
-    """Tell Codex, Claude Code and Cursor hook payloads apart by their identifiers."""
-    if event.get("hook_event_name") in CURSOR_EVENTS or "conversation_id" in event or "generation_id" in event:
+    """Tell Codex, Claude Code, Cursor and Gemini CLI hook payloads apart."""
+    name = event.get("hook_event_name")
+    if name in CURSOR_EVENTS or "conversation_id" in event or "generation_id" in event:
         return "cursor"
+    if name in ("BeforeAgent", "AfterAgent", "AfterTool", "BeforeTool") or "prompt_response" in event:
+        return "gemini"
     if "prompt_id" in event or "tool_output" in event or "tool_output_is_error" in event:
         return "claude-code"
     return "codex"
@@ -748,6 +782,20 @@ def normalize_hook_event(event, harness="auto"):
         harness = detect_harness(event)
     if harness == "codex":
         return harness, event
+    if harness == "gemini":
+        # Gemini CLI: BeforeAgent / AfterTool / AfterAgent, no turn or call ids,
+        # tool_response is an object, AfterAgent carries prompt_response.
+        normalized = dict(event)
+        name = event.get("hook_event_name")
+        normalized["hook_event_name"] = GEMINI_EVENTS.get(name, name)
+        normalized.pop("turn_id", None)  # assigned per session by Store.record
+        if normalized["hook_event_name"] == "PostToolUse" and not normalized.get("tool_use_id"):
+            normalized["tool_use_id"] = f"{event.get('timestamp') or int(time.time() * 1000)}:{event.get('tool_name', '')}"[:4096]
+        if normalized["hook_event_name"] == "Stop":
+            if "last_assistant_message" not in normalized and isinstance(event.get("prompt_response"), str):
+                normalized["last_assistant_message"] = event["prompt_response"]
+            normalized.pop("prompt", None)  # already captured by the BeforeAgent event
+        return harness, normalized
     if harness == "cursor":
         normalized = dict(event)
         normalized["hook_event_name"] = CURSOR_EVENTS.get(event.get("hook_event_name"), event.get("hook_event_name"))
@@ -767,11 +815,11 @@ def normalize_hook_event(event, harness="auto"):
     normalized = dict(event)
     if not normalized.get("turn_id"):
         turn = normalized.get("prompt_id")
-        if not isinstance(turn, str) or not turn:
-            # Older builds without prompt_id: keep prompts distinct rather than
-            # collapsing a whole session into one duplicate-suppressed turn.
-            turn = "t-" + str(normalized.get("tool_use_id") or int(time.time() * 1000))
-        normalized["turn_id"] = turn
+        if isinstance(turn, str) and turn:
+            normalized["turn_id"] = turn
+        else:
+            # Older builds without prompt_id: Store.record assigns a per-session turn.
+            normalized.pop("turn_id", None)
     if "tool_response" not in normalized and "tool_output" in normalized:
         normalized["tool_response"] = normalized["tool_output"]
     return harness, normalized
@@ -961,11 +1009,99 @@ def cursor_paths(cursor_home):
 
 
 def load_json_object(path):
+    """Existing config to merge into; a present-but-unparseable file is never overwritten."""
+    if not path.exists():
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    except (OSError, ValueError) as error:
+        raise InputError(f"无法解析 {path}，为避免覆盖你的配置已中止：{error}") from error
     return data if isinstance(data, dict) else {}
+
+
+GEMINI_HOOKS = {"SessionStart": ("start", 5000), "BeforeAgent": ("hook", 3000), "AfterTool": ("hook", 3000), "AfterAgent": ("hook", 3000)}
+
+
+def write_wrappers(wrapper_dir, harness):
+    """Argument-free wrapper scripts so a harness only needs a path to run."""
+    script = Path(__file__).resolve()
+    wrapper_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    wrappers = {}
+    for action in ("start", "hook"):
+        wrapper = wrapper_dir / f"{action}.sh"
+        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" {action} --harness {harness}\n', encoding="utf-8")
+        wrapper.chmod(0o755)
+        wrappers[action] = str(wrapper)
+    return wrappers
+
+
+def install_gemini(gemini_home):
+    """Register Tracekin in Gemini CLI's user settings.
+
+    Gemini CLI reads ``hooks`` and ``mcpServers`` from ``~/.gemini/settings.json``
+    (hook timeouts in milliseconds). Entries pointing into
+    ``<gemini_home>/tracekin/`` are ours and are replaced on re-install;
+    everything else in the file is kept. The extension in this repository
+    (``gemini-extension.json`` + ``hooks/hooks.json``) is the alternative.
+    """
+    gemini_home = Path(gemini_home).expanduser().resolve()
+    settings_path = gemini_home / "settings.json"
+    wrapper_dir = gemini_home / "tracekin"
+    settings = load_json_object(settings_path)
+    wrappers = write_wrappers(wrapper_dir, "gemini")
+    table = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    for event, (action, timeout) in GEMINI_HOOKS.items():
+        groups = []
+        for group in table.get(event) or []:
+            if not isinstance(group, dict):
+                continue
+            kept = [h for h in (group.get("hooks") or []) if not (isinstance(h, dict) and str(h.get("command", "")).startswith(str(wrapper_dir)))]
+            if kept:
+                groups.append(dict(group, hooks=kept))
+        groups.append({"hooks": [{"type": "command", "command": wrappers[action], "timeout": timeout, "name": "tracekin"}]})
+        table[event] = groups
+    settings["hooks"] = table
+    servers = settings.get("mcpServers") if isinstance(settings.get("mcpServers"), dict) else {}
+    servers["tracekin"] = {"command": sys.executable, "args": [str(Path(__file__).resolve().with_name("mcp_server.py"))]}
+    settings["mcpServers"] = servers
+    write_json(settings_path, settings)
+    return {"tracekin": "installed", "harness": "gemini", "settings": str(settings_path), "wrappers": wrappers, "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
+
+
+def uninstall_gemini(gemini_home):
+    """Remove only Tracekin's hook groups, MCP server and wrappers from Gemini CLI settings."""
+    gemini_home = Path(gemini_home).expanduser().resolve()
+    settings_path = gemini_home / "settings.json"
+    wrapper_dir = gemini_home / "tracekin"
+    removed = 0
+    settings = load_json_object(settings_path)
+    table = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
+    for event in list(table):
+        groups = []
+        for group in table.get(event) or []:
+            hooks = group.get("hooks") if isinstance(group, dict) else None
+            kept = [h for h in (hooks or []) if not (isinstance(h, dict) and str(h.get("command", "")).startswith(str(wrapper_dir)))]
+            removed += len(hooks or []) - len(kept)
+            if kept:
+                groups.append(dict(group, hooks=kept))
+        if groups:
+            table[event] = groups
+        else:
+            table.pop(event, None)
+    servers = settings.get("mcpServers") if isinstance(settings.get("mcpServers"), dict) else {}
+    if servers.pop("tracekin", None) is not None:
+        removed += 1
+    if settings_path.exists():
+        settings["hooks"] = table
+        settings["mcpServers"] = servers
+        write_json(settings_path, settings)
+    for wrapper in ("start.sh", "hook.sh"):
+        (wrapper_dir / wrapper).unlink(missing_ok=True)
+    try:
+        wrapper_dir.rmdir()
+    except OSError:
+        pass
+    return {"tracekin": "uninstalled", "harness": "gemini", "removed": removed}
 
 
 def write_json(path, data):
@@ -982,14 +1118,9 @@ def install_cursor(cursor_home):
     """
     cursor_home, hooks_path, mcp_path, wrapper_dir = cursor_paths(cursor_home)
     script = Path(__file__).resolve()
-    wrapper_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    wrappers = {}
-    for action in ("start", "hook"):
-        wrapper = wrapper_dir / f"{action}.sh"
-        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" {action} --harness cursor\n', encoding="utf-8")
-        wrapper.chmod(0o755)
-        wrappers[action] = str(wrapper)
     hooks = load_json_object(hooks_path)
+    mcp_existing = load_json_object(mcp_path)
+    wrappers = write_wrappers(wrapper_dir, "cursor")
     hooks.setdefault("version", 1)
     table = hooks.get("hooks") if isinstance(hooks.get("hooks"), dict) else {}
     for event, (action, timeout) in CURSOR_HOOKS.items():
@@ -998,7 +1129,7 @@ def install_cursor(cursor_home):
         table[event] = entries
     hooks["hooks"] = table
     write_json(hooks_path, hooks)
-    mcp = load_json_object(mcp_path)
+    mcp = mcp_existing
     servers = mcp.get("mcpServers") if isinstance(mcp.get("mcpServers"), dict) else {}
     servers["tracekin"] = {"type": "stdio", "command": sys.executable, "args": [str(script.with_name("mcp_server.py"))]}
     mcp["mcpServers"] = servers
@@ -1039,10 +1170,11 @@ def uninstall_cursor(cursor_home):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["hook", "status", "start", "install-cursor", "uninstall-cursor"])
+    parser.add_argument("action", choices=["hook", "status", "start", "install-cursor", "uninstall-cursor", "install-gemini", "uninstall-gemini"])
     parser.add_argument("--home", type=Path, default=home_dir())
     parser.add_argument("--harness", choices=("auto",) + HARNESSES, default="auto", help="hook payload dialect; auto-detected from the payload by default")
     parser.add_argument("--cursor-home", type=Path, default=Path("~/.cursor"), help="Cursor user config directory for install-cursor / uninstall-cursor")
+    parser.add_argument("--gemini-home", type=Path, default=Path("~/.gemini"), help="Gemini CLI user config directory for install-gemini / uninstall-gemini")
     args = parser.parse_args()
     if args.action == "start":
         data_dir = str(Path(args.home).expanduser().resolve())
@@ -1055,7 +1187,7 @@ def main():
         hook_debug(args.home, {"hook_event_name": "SessionStart"}, outcome["tracekin"] + ("" if outcome.get("project") else ":unbound"), args.harness)
         # Cursor validates sessionStart output against its own schema; the
         # diagnostics stay in the trace file there.
-        print(json.dumps({} if args.harness == "cursor" else outcome, ensure_ascii=False))
+        print(json.dumps({} if args.harness in ("cursor", "gemini") else outcome, ensure_ascii=False))
     elif args.action == "hook":
         event = None
         try:
@@ -1067,6 +1199,10 @@ def main():
         print(json.dumps(install_cursor(args.cursor_home), ensure_ascii=False))
     elif args.action == "uninstall-cursor":
         print(json.dumps(uninstall_cursor(args.cursor_home), ensure_ascii=False))
+    elif args.action == "install-gemini":
+        print(json.dumps(install_gemini(args.gemini_home), ensure_ascii=False))
+    elif args.action == "uninstall-gemini":
+        print(json.dumps(uninstall_gemini(args.gemini_home), ensure_ascii=False))
     else:
         # Pure read: no directory, schema, migration, or prune writes.
         print(json.dumps(Store(args.home, create=False).snapshot(), ensure_ascii=False))

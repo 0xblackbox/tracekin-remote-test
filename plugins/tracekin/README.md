@@ -6,8 +6,8 @@
 
 | 表面 | 文件 | 职责 |
 |------|------|------|
-| Hooks | `hooks/hooks.json`（Codex、Claude Code）、`cursor/hooks.json`（Cursor） | `SessionStart` 绑定项目并拉起 companion；`UserPromptSubmit` / `PostToolUse` / `Stop` 采集，控制指令在采集前处理 |
-| MCP | `codex/mcp.json`、`.mcp.json`、`cursor/mcp.json` → `scripts/mcp_server.py` | `tracekin_status`、`tracekin_data_contract` 只读；`tracekin_allow` 修复 / 重新启用；`tracekin_deny` 全局紧急撤销 |
+| Hooks | `hooks/hooks.json`（Codex、Claude Code）、`cursor/hooks.json`（Cursor）、仓库根 `hooks/hooks.json`（Gemini CLI 扩展） | `SessionStart` 绑定项目并拉起 companion；`UserPromptSubmit` / `PostToolUse` / `Stop` 采集，控制指令在采集前处理 |
+| MCP | `codex/mcp.json`、`.mcp.json`、`cursor/mcp.json`、根 `gemini-extension.json` → `scripts/mcp_server.py` | `tracekin_status`、`tracekin_data_contract` 只读；`tracekin_allow` 修复 / 重新启用；`tracekin_deny` 全局紧急撤销 |
 | companion | `scripts/serve.py` | 投递 worker、`127.0.0.1` 面板、demo 模式的本地接收器 |
 | Skill | `skills/tracekin/SKILL.md` | 告诉模型如何响应 `tracekin off / on / status` 和状态查询 |
 
@@ -61,6 +61,22 @@ ln -s ~/tracekin-remote-test/plugins/tracekin ~/.cursor/plugins/local/tracekin
 ```
 
 之后执行 "Developer: Reload Window"。识别不到就用 A。
+
+### Gemini CLI
+
+仓库根目录就是一个 Gemini CLI 扩展（`gemini-extension.json` + `hooks/hooks.json`，命令用 `${extensionPath}` 定位仓库内的包装脚本）：
+
+```bash
+gemini extensions install https://github.com/0xblackbox/tracekin-remote-test
+```
+
+重启 CLI 后生效；升级用 `gemini extensions update tracekin`，本地开发用 `gemini extensions link /path/to/checkout`。备选方案是写入用户设置：
+
+```bash
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-gemini
+```
+
+它把无参包装脚本合并进 `~/.gemini/settings.json` 的 `hooks`（`SessionStart`、`BeforeAgent`、`AfterTool`、`AfterAgent`，超时单位毫秒）和 `mcpServers`，保留其他条目；`uninstall-gemini` 只删自己的。若 `settings.json` 无法按 JSON 解析（例如带注释），安装器会中止而不是覆盖它。
 
 ## 运行细节
 
@@ -128,17 +144,18 @@ companion 的 worker 每 0.5 秒取最旧的待发送事件，发送期间不持
 
 ## 各 harness 差异
 
-| | Codex | Claude Code | Cursor |
-|------|------|------|------|
-| 会话 / 轮次 ID | `session_id` / `turn_id` | `session_id` / `prompt_id` | `conversation_id` / `generation_id` |
-| 工具输出字段 | `tool_response` | `tool_response`（2.1.273 实测）或 `tool_output`（文档） | `tool_output` |
-| Stop 的助手回复 | 有 | 有（实测） | 无，`task_data` 为空 |
-| 项目来源 | `cwd` | `cwd` | `workspace_roots[0]`，用户级 hook 的工作目录是 `~/.cursor` |
-| hook 变量 | `${PLUGIN_ROOT}`，也导出 `CLAUDE_PLUGIN_ROOT` | `${CLAUDE_PLUGIN_ROOT}` | 无，包装脚本自行定位 |
-| hook 输出 | 忽略 | JSON 或 `{}` | `beforeSubmitPrompt` 必须 `{"continue": true}` |
-| 安装 | marketplace | marketplace / `--plugin-dir` | `install-cursor` 或 `~/.cursor/plugins/local` |
+| | Codex | Claude Code | Cursor | Gemini CLI |
+|------|------|------|------|------|
+| 事件名 | SessionStart / UserPromptSubmit / PostToolUse / Stop | 同 Codex | sessionStart / beforeSubmitPrompt / postToolUse / stop | SessionStart / BeforeAgent / AfterTool / AfterAgent |
+| 会话 / 轮次 ID | `session_id` / `turn_id` | `session_id` / `prompt_id` | `conversation_id` / `generation_id` | `session_id` / 无，本地按会话计数（`session_turns` 表） |
+| 工具输出字段 | `tool_response` | `tool_response`（2.1.273 实测）或 `tool_output`（文档） | `tool_output` | `tool_response`（对象） |
+| Stop 的助手回复 | 有 | 有（实测） | 无，`task_data` 为空 | 有，来自 `prompt_response` |
+| 项目来源 | `cwd` | `cwd` | `workspace_roots[0]`，用户级 hook 的工作目录是 `~/.cursor` | `cwd` |
+| hook 变量 | `${PLUGIN_ROOT}`，也导出 `CLAUDE_PLUGIN_ROOT` | `${CLAUDE_PLUGIN_ROOT}` | 无，包装脚本自行定位 | `${extensionPath}`，超时单位毫秒 |
+| hook 输出 | 忽略 | JSON 或 `{}` | `beforeSubmitPrompt` 必须 `{"continue": true}` | `{}`，不得输出非 JSON 文本 |
+| 安装 | marketplace | marketplace / `--plugin-dir` | `install-cursor` 或 `~/.cursor/plugins/local` | `gemini extensions install <repo>` 或 `install-gemini` |
 
-`tracekin.py hook --harness auto` 会按字段自动识别方言，也可用 `--harness codex|claude-code|cursor` 强制。
+`tracekin.py hook --harness auto` 会按字段自动识别方言，也可用 `--harness codex|claude-code|cursor|gemini` 强制。没有轮次 ID 的 harness 由 `Store.record` 按会话分配：新提示词开启第 N+1 轮，工具与结束事件归入当前轮；旧数据库缺少 `session_turns` 表时退回逐事件唯一 ID。
 
 ## 排错
 
@@ -162,6 +179,6 @@ hook 字段日志：`touch ~/.tracekin/debug-hooks` 后，每次 hook 调用往 
 - 集成冒烟：`python3 scripts/integration_smoke.py`（demo 模式，本机接收器）
 - 语法：`python3 -m py_compile scripts/*.py`
 - 清单：`claude plugin validate --strict .`（在插件目录）与仓库根 `claude plugin validate .`
-- 版本：改 `PLUGIN_VERSION` 与 `.codex-plugin` / `.claude-plugin` / `.cursor-plugin` 三份 `plugin.json` 及根 `.claude-plugin/marketplace.json`，测试会校验一致
+- 版本：改 `PLUGIN_VERSION` 与 `.codex-plugin` / `.claude-plugin` / `.cursor-plugin` 三份 `plugin.json`、根 `.claude-plugin/marketplace.json` 和根 `gemini-extension.json`，测试会校验一致
 
 本插件只证明"活动与授权的传输链路"，不声称活动元数据是训练语料、任务质量或任何奖励。

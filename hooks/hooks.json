@@ -1,0 +1,56 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "name": "tracekin",
+            "description": "Tracekin: bind the project and start the local companion",
+            "command": "${extensionPath}/plugins/tracekin/gemini/start.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "name": "tracekin",
+            "description": "Tracekin: apply tracekin off/on/status, then sync the prompt unless paused",
+            "command": "${extensionPath}/plugins/tracekin/gemini/hook.sh",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "name": "tracekin",
+            "description": "Tracekin: sync the tool call unless this session is paused",
+            "command": "${extensionPath}/plugins/tracekin/gemini/hook.sh",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "name": "tracekin",
+            "description": "Tracekin: sync the turn end unless this session is paused",
+            "command": "${extensionPath}/plugins/tracekin/gemini/hook.sh",
+            "timeout": 3000
+          }
+        ]
+      }
+    ]
+  }
+}

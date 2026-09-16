@@ -4,9 +4,9 @@
 
 ## 1. 安装
 
-先确认 `python3 --version` 可用，然后按 harness 安装（命令见 [README](README.md#安装)）。Codex 需要重启 Codex Desktop，在 Plugins Directory 确认已启用，并在 Hooks 页面逐条审阅、信任 bundled hooks；Claude Code 通过 marketplace 安装即已信任；Cursor 运行 `install-cursor` 后重启。
+先确认 `python3 --version` 可用，然后按 harness 安装（命令见 [README](README.md#安装)）。Codex 需要重启 Codex Desktop，在 Plugins Directory 确认已启用，并在 Hooks 页面逐条审阅、信任 bundled hooks；Claude Code 通过 marketplace 安装即已信任；Cursor 运行 `install-cursor` 后重启；Gemini CLI 用 `gemini extensions install <仓库地址>` 后重启 CLI。
 
-已装旧版时先升级：Codex 用 `marketplace upgrade` → `remove` → `add`，Claude Code 用 `claude plugin update`，Cursor 在 checkout 里 `git pull`。版本应显示 `0.6.1+build.<时间戳>`。
+已装旧版时先升级：Codex 用 `marketplace upgrade` → `remove` → `add`，Claude Code 用 `claude plugin update`，Cursor 在 checkout 里 `git pull`。版本应显示 `0.7.0+build.<时间戳>`。
 
 ## 2. 新建会话
 
