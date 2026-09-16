@@ -2,7 +2,7 @@
 
 **Local-first activity companion for coding agents.** 在 Codex、Claude Code、Cursor 里以插件形式运行：安装即默认同步当前项目的活动事件到 Tracekin Cloud，敏感会话一句 `tracekin off` 即可暂停，永远不读会话记录文件。
 
-![version](https://img.shields.io/badge/version-0.6.0-blue)
+![version](https://img.shields.io/badge/version-0.6.1-blue)
 ![Codex](https://img.shields.io/badge/Codex-plugin-black)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-d97757)
 ![Cursor](https://img.shields.io/badge/Cursor-hooks-6e56cf)

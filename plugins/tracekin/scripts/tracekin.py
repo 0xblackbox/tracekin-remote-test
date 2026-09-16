@@ -33,7 +33,7 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.6.0+build.20260916211500"
+PLUGIN_VERSION = "0.6.1+build.20260917024836"
 HARNESSES = ("codex", "claude-code", "cursor")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
 # Cursor names its lifecycle events differently; map them onto the shared shape.

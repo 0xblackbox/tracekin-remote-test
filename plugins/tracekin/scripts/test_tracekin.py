@@ -18,7 +18,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.6.0+build.20260916211500"
+EXPECTED_VERSION = "0.6.1+build.20260917024836"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"

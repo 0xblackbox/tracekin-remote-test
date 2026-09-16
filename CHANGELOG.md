@@ -2,7 +2,7 @@
 
 版本格式 `X.Y.Z+build.<时间戳>`（0.4.x 为 `+codex.<时间戳>`），时间戳只用于让插件缓存识别新版本。
 
-## 未发布
+## 0.6.1 · 2026-09-17
 
 - companion 启动时不再对 `127.0.0.1` 做反向 DNS 查询：在反向解析慢的环境（GitHub macOS runner、部分 VPN）下该查询会让 companion 卡住几十秒、迟迟写不出 `runtime.json`。
 - companion 的输出记录到 `~/.tracekin/companion.log`，便于排查"面板起不来"。
