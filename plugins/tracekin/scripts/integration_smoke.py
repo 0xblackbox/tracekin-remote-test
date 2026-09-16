@@ -7,16 +7,15 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
-from serve import App, handler_for
+from serve import App, LoopbackServer, handler_for
 from tracekin import send_https
-from http.server import ThreadingHTTPServer
 
 with tempfile.TemporaryDirectory(prefix="tracekin-integration-") as d:
     project = Path(d) / "project"; project.mkdir()
     app = App(Path(d) / "state", demo=True, project=project)
     assert app.snapshot()["config"]["projects"] == [str(project.resolve())]
     off = app.snapshot(); assert off["config"]["sharing_enabled"] and off["current_project_authorized"] and off["config"]["consent_decision"] == "allowed"
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(app))
+    server = LoopbackServer(("127.0.0.1", 0), handler_for(app))
     server_thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     base = f"http://127.0.0.1:{server.server_port}"

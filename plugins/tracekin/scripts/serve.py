@@ -11,11 +11,28 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
 from urllib.parse import urlsplit
 
 from tracekin import InputError, PLUGIN_VERSION, SCHEMA, Store, home_dir, send_https
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
+
+
+class LoopbackServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse-DNS lookup in server_bind.
+
+    ``HTTPServer.server_bind`` calls ``socket.getfqdn`` on the bind address;
+    on hosts with slow or broken reverse DNS (GitHub's macOS runners, some
+    VPN setups) that stalls startup for tens of seconds, so the companion
+    never publishes runtime.json. The server only ever listens on loopback.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 class App:
@@ -70,7 +87,7 @@ class App:
                 except (ValueError, KeyError, TypeError, IndexError):
                     self.send_error(400)
 
-        self.collector = ThreadingHTTPServer(("127.0.0.1", 0), Collector)
+        self.collector = LoopbackServer(("127.0.0.1", 0), Collector)
         self.store.demo_endpoint = f"http://127.0.0.1:{self.collector.server_port}{route}"
         # A fresh demo receiver has a new destination. Keep the install-default
         # stream enabled and bind it to the current project automatically.
@@ -204,7 +221,7 @@ def main():
     p.add_argument("--port", type=int, default=0)
     args = p.parse_args()
     app = App(args.home, demo=args.demo, project=args.project)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler_for(app))
+    server = LoopbackServer(("127.0.0.1", args.port), handler_for(app))
     threading.Thread(target=app.worker, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/#{app.token}"
     runtime = app.store.home / "runtime.json"
