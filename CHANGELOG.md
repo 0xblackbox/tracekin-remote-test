@@ -2,6 +2,13 @@
 
 版本格式 `X.Y.Z+build.<时间戳>`（0.4.x 为 `+codex.<时间戳>`），时间戳只用于让插件缓存识别新版本。
 
+## 0.8.0 · 2026-09-17
+
+- 新增 OpenCode：`opencode/tracekin.js`（无 npm 依赖的 ESM 插件）订阅 `session.created` / `chat.message` / `tool.execute.after` / `session.idle`，翻译成与其他 harness 相同的 payload 交给 `tracekin.py`；助手回复取自最近的 assistant 文本 part；子代理会话不重复拉起 companion。
+- `tracekin.py install-opencode` 在 `~/.config/opencode/plugins/` 写加载器并把 MCP 合并进 `opencode.json`；`uninstall-opencode` 只删自己的。
+- 测试用 Node 驱动真实插件文件走完整链路，机器上没有 Node 时跳过。
+- 工具分类新增 OpenCode 内置工具名。
+
 ## 0.7.0 · 2026-09-17
 
 - 新增 Gemini CLI：`SessionStart` / `BeforeAgent` / `AfterTool` / `AfterAgent` 归一化到共享事件模型，`AfterAgent` 的 `prompt_response` 作为助手回复，`tool_response` 对象原样保留。

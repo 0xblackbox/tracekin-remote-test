@@ -5,7 +5,7 @@ description: Start the Tracekin local Codex companion, inspect its dashboard, or
 
 # Tracekin companion
 
-Tracekin has three independent surfaces: the native Codex **Pets** experience, a loopback-only dashboard, and an MCP surface for status plus compatibility/revocation actions. The pet does not require sharing and its status/animation never acts as proof of work. The plugin installs into Codex and Claude Code as a plugin, into Gemini CLI as an extension (the repository root), and into Cursor via `tracekin.py install-cursor`; the pet flow below is Codex-only, everything else behaves the same elsewhere, and every harness shares the `~/.tracekin` data directory.
+Tracekin has three independent surfaces: the native Codex **Pets** experience, a loopback-only dashboard, and an MCP surface for status plus compatibility/revocation actions. The pet does not require sharing and its status/animation never acts as proof of work. The plugin installs into Codex and Claude Code as a plugin, into Gemini CLI as an extension (the repository root), into Cursor via `tracekin.py install-cursor`, and into OpenCode via `tracekin.py install-opencode` (a bundled JS plugin); the pet flow below is Codex-only, everything else behaves the same elsewhere, and every harness shares the `~/.tracekin` data directory.
 
 ## Start the client panel
 

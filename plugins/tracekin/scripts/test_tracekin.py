@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -18,7 +19,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.7.0+build.20260917025521"
+EXPECTED_VERSION = "0.8.0+build.20260917031500"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
@@ -689,6 +690,97 @@ def test_gemini_installer_merges_settings_and_refuses_unparseable_files(d, root)
     (broken / "settings.json").write_text('{ // comment\n  "theme": "dark" }')
     failed = run_cli("install-gemini", "--gemini-home", broken)
     assert failed.returncode != 0 and (broken / "settings.json").read_text().startswith("{ // comment")
+
+
+NODE = shutil.which("node") or shutil.which("bun")
+
+
+def opencode_driver(d, root, home):
+    """A tiny ESM script that loads the bundled OpenCode plugin and replays hook calls."""
+    driver = d / "driver.mjs"
+    driver.write_text(
+        f"import {{ TracekinPlugin }} from {json.dumps((PLUGIN_DIR / 'opencode' / 'tracekin.js').as_uri())};\n"
+        f"const hooks = await TracekinPlugin({{ directory: {json.dumps(str(root))}, worktree: {json.dumps(str(root))}, project: {{}}, client: {{}}, $: undefined }});\n"
+        "for (const step of JSON.parse(process.argv[2])) {\n"
+        "  if (step.kind === 'event') await hooks.event({ event: step.event });\n"
+        "  else if (step.kind === 'chat') await hooks['chat.message'](step.input, step.output);\n"
+        "  else if (step.kind === 'tool') await hooks['tool.execute.after'](step.input, step.output);\n"
+        "}\n"
+        "console.log('driver ok');\n",
+        encoding="utf-8",
+    )
+
+    def drive(steps):
+        result = subprocess.run([NODE, str(driver), json.dumps(steps)], env=dict(base_env(), TRACEKIN_HOME=str(home), TRACEKIN_PYTHON=sys.executable), capture_output=True, text=True, cwd=root, timeout=180)
+        assert result.returncode == 0 and "driver ok" in result.stdout, result.stderr
+    return drive
+
+
+def test_opencode_plugin_bridges_events_to_the_store(d, root):
+    if not NODE:
+        print("  (no node or bun on PATH; OpenCode plugin test skipped)")
+        return
+    home = d / "opencode"
+    drive = opencode_driver(d, root, home)
+    session = "oc-session-secret"
+    try:
+        drive([{"kind": "event", "event": {"type": "session.created", "properties": {"info": {"id": session, "projectID": "p", "directory": str(root), "title": "t"}}}}])
+        settle_companion(home)
+        store = Store(home, create=False)
+        assert store.snapshot()["current_project_authorized"] is True and store.snapshot()["config"]["projects"] == [str(root.resolve())]
+        drive([
+            {"kind": "chat", "input": {"sessionID": session, "messageID": "m1"}, "output": {"message": {"id": "m1", "role": "user"}, "parts": [{"type": "text", "text": "PRIVATE_PROMPT"}, {"type": "text", "text": "SYNTHETIC_HIDDEN", "synthetic": True}]}},
+            {"kind": "tool", "input": {"tool": "bash", "sessionID": session, "callID": "call-1", "args": {"command": "PRIVATE_COMMAND"}}, "output": {"title": "ls", "output": "PRIVATE_OUTPUT", "metadata": {}}},
+            {"kind": "event", "event": {"type": "message.updated", "properties": {"info": {"id": "a1", "sessionID": session, "role": "assistant"}}}},
+            {"kind": "event", "event": {"type": "message.part.updated", "properties": {"part": {"id": "p1", "sessionID": session, "messageID": "a1", "type": "text", "text": "PRIVATE_ANSWER"}}}},
+            {"kind": "event", "event": {"type": "session.idle", "properties": {"sessionID": session}}},
+            {"kind": "event", "event": {"type": "session.created", "properties": {"info": {"id": "child", "parentID": session, "directory": str(root)}}}},
+        ])
+        events = {e["payload"]["event"]: e["payload"] for e in store.snapshot()["events"]}
+        assert set(events) == {"UserPromptSubmit", "PostToolUse", "Stop"} and store.snapshot()["counts"] == {"pending": 3, "sent": 0}
+        assert all(p["source"] == "opencode_hook" for p in events.values()) and len({p["turn_id"] for p in events.values()}) == 1
+        assert events["UserPromptSubmit"]["task_data"] == {"prompt": "PRIVATE_PROMPT"}, "synthetic parts are not the user's prompt"
+        assert events["PostToolUse"]["tool_category"] == "shell" and events["PostToolUse"]["task_data"] == {"tool_input": {"command": "PRIVATE_COMMAND"}, "tool_response": "PRIVATE_OUTPUT"}
+        assert events["Stop"]["task_data"] == {"last_assistant_message": "PRIVATE_ANSWER"}
+        raw = store.db.read_bytes()
+        assert session.encode() not in raw and b"SYNTHETIC_HIDDEN" not in raw
+        assert not (home / "runtime.json").exists(), "a subagent session must not restart the companion"
+        # `tracekin off` typed in OpenCode pauses this session and drops its pending events.
+        drive([
+            {"kind": "chat", "input": {"sessionID": session, "messageID": "m2"}, "output": {"parts": [{"type": "text", "text": "`tracekin off`"}]}},
+            {"kind": "tool", "input": {"tool": "read", "sessionID": session, "callID": "call-2", "args": {"filePath": "/x"}}, "output": {"title": "", "output": "PRIVATE_FILE", "metadata": {}}},
+        ])
+        status = store.snapshot()
+        assert status["session_controls"]["paused_sessions"] == 1 and status["counts"] == {"pending": 0, "sent": 0}
+        assert b"PRIVATE_FILE" not in store.db.read_bytes()
+    finally:
+        stop_companion(home)
+
+
+def test_opencode_installer_writes_loader_and_mcp(d, root):
+    opencode_home = d / "dot-opencode"
+    opencode_home.mkdir()
+    (opencode_home / "opencode.json").write_text(json.dumps({"$schema": "https://opencode.ai/config.json", "theme": "x", "plugin": ["some-npm-plugin"], "mcp": {"other": {"type": "local", "command": ["other"]}}}))
+    for _ in range(2):  # idempotent
+        assert json.loads(run_cli("install-opencode", "--opencode-home", opencode_home).stdout)["tracekin"] == "installed"
+    loader = (opencode_home / "plugins" / "tracekin.js").read_text()
+    assert "export { TracekinPlugin } from" in loader and str(PLUGIN_DIR / "opencode" / "tracekin.js") in loader
+    config = json.loads((opencode_home / "opencode.json").read_text())
+    assert config["theme"] == "x" and config["plugin"] == ["some-npm-plugin"] and config["mcp"]["other"] == {"type": "local", "command": ["other"]}
+    assert config["mcp"]["tracekin"]["type"] == "local" and config["mcp"]["tracekin"]["command"][1].endswith("mcp_server.py") and config["mcp"]["tracekin"]["enabled"] is True
+    if NODE:
+        probe = subprocess.run([NODE, "--input-type=module", "-e", f"import {{ TracekinPlugin }} from {json.dumps((opencode_home / 'plugins' / 'tracekin.js').as_uri())}; console.log(typeof TracekinPlugin)"], capture_output=True, text=True, timeout=60)
+        assert probe.returncode == 0 and probe.stdout.strip() == "function", probe.stderr
+    removed = json.loads(run_cli("uninstall-opencode", "--opencode-home", opencode_home).stdout)
+    assert removed["removed"] == 2 and not (opencode_home / "plugins" / "tracekin.js").exists()
+    config = json.loads((opencode_home / "opencode.json").read_text())
+    assert config["mcp"] == {"other": {"type": "local", "command": ["other"]}} and config["plugin"] == ["some-npm-plugin"]
+    # JSONC (comments) is valid for OpenCode but not for us: never overwrite it.
+    jsonc = d / "dot-opencode-jsonc"
+    jsonc.mkdir()
+    (jsonc / "opencode.json").write_text('{ // comment\n  "theme": "x" }')
+    failed = run_cli("install-opencode", "--opencode-home", jsonc)
+    assert failed.returncode != 0 and (jsonc / "opencode.json").read_text().startswith("{ // comment") and not (jsonc / "plugins").exists()
 
 
 def test_hook_debug_trace_is_opt_in_and_keys_only(d, root):

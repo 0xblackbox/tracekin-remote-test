@@ -33,18 +33,18 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.7.0+build.20260917025521"
-HARNESSES = ("codex", "claude-code", "cursor", "gemini")
+PLUGIN_VERSION = "0.8.0+build.20260917031500"
+HARNESSES = ("codex", "claude-code", "cursor", "gemini", "opencode")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
 # Cursor and Gemini CLI name their lifecycle events differently; map them onto the shared shape.
 CURSOR_EVENTS = {"sessionStart": "SessionStart", "beforeSubmitPrompt": "UserPromptSubmit", "postToolUse": "PostToolUse", "stop": "Stop"}
 GEMINI_EVENTS = {"SessionStart": "SessionStart", "BeforeAgent": "UserPromptSubmit", "AfterTool": "PostToolUse", "AfterAgent": "Stop"}
 # Coarse tool categories; never the tool name, command, or arguments.
 TOOL_CATEGORIES = {
-    "Bash": "shell", "exec_command": "shell", "shell": "shell", "Shell": "shell", "run_terminal_cmd": "shell", "run_shell_command": "shell",
-    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "edit_file": "edit", "search_replace": "edit", "write": "edit", "write_file": "edit", "replace": "edit",
-    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read", "read_file": "read", "list_dir": "read", "grep": "read", "codebase_search": "read", "glob_file_search": "read", "glob": "read", "search_file_content": "read", "list_directory": "read", "read_many_files": "read",
-    "WebFetch": "web", "WebSearch": "web", "web_search": "web", "fetch": "web", "web_fetch": "web", "google_web_search": "web",
+    "Bash": "shell", "bash": "shell", "exec_command": "shell", "shell": "shell", "Shell": "shell", "run_terminal_cmd": "shell", "run_shell_command": "shell",
+    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "edit_file": "edit", "search_replace": "edit", "write": "edit", "write_file": "edit", "replace": "edit", "edit": "edit", "multiedit": "edit", "patch": "edit",
+    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read", "read_file": "read", "list_dir": "read", "grep": "read", "codebase_search": "read", "glob_file_search": "read", "glob": "read", "search_file_content": "read", "list_directory": "read", "read_many_files": "read", "read": "read", "list": "read",
+    "WebFetch": "web", "WebSearch": "web", "web_search": "web", "fetch": "web", "web_fetch": "web", "google_web_search": "web", "webfetch": "web", "websearch": "web",
     "Task": "agent", "Agent": "agent", "task": "agent",
 }
 # Ordered: "web" must win over "search" (WebSearch), "shell" over "read" (read_shell_output).
@@ -761,6 +761,8 @@ def detect_harness(event):
         return "cursor"
     if name in ("BeforeAgent", "AfterAgent", "AfterTool", "BeforeTool") or "prompt_response" in event:
         return "gemini"
+    if event.get("harness") == "opencode" or "worktree" in event:
+        return "opencode"
     if "prompt_id" in event or "tool_output" in event or "tool_output_is_error" in event:
         return "claude-code"
     return "codex"
@@ -782,6 +784,12 @@ def normalize_hook_event(event, harness="auto"):
         harness = detect_harness(event)
     if harness == "codex":
         return harness, event
+    if harness == "opencode":
+        # The bundled OpenCode plugin (opencode/tracekin.js) already emits the
+        # shared shape; it carries no turn id, so Store.record counts turns.
+        normalized = dict(event)
+        normalized.pop("turn_id", None)
+        return harness, normalized
     if harness == "gemini":
         # Gemini CLI: BeforeAgent / AfterTool / AfterAgent, no turn or call ids,
         # tool_response is an object, AfterAgent carries prompt_response.
@@ -1068,6 +1076,49 @@ def install_gemini(gemini_home):
     return {"tracekin": "installed", "harness": "gemini", "settings": str(settings_path), "wrappers": wrappers, "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
 
 
+def install_opencode(opencode_home):
+    """Register Tracekin with OpenCode.
+
+    OpenCode auto-loads JS plugins from ``~/.config/opencode/plugins/`` and
+    reads MCP servers from ``~/.config/opencode/opencode.json``. Write a
+    one-line loader that re-exports the bundled plugin from this checkout
+    (so ``git pull`` upgrades it) and merge the MCP server into the config,
+    keeping everything else. A config that cannot be parsed as JSON (for
+    example JSONC with comments) is left untouched and reported.
+    """
+    opencode_home = Path(opencode_home).expanduser().resolve()
+    plugin_source = Path(__file__).resolve().parent.parent / "opencode" / "tracekin.js"
+    loader = opencode_home / "plugins" / "tracekin.js"
+    config_path = opencode_home / "opencode.json"
+    config = load_json_object(config_path)
+    loader.parent.mkdir(parents=True, exist_ok=True)
+    loader.write_text(f'// Tracekin loader written by tracekin.py install-opencode; re-exports the checkout so git pull upgrades it.\nexport {{ TracekinPlugin }} from {json.dumps(str(plugin_source))};\n', encoding="utf-8")
+    servers = config.get("mcp") if isinstance(config.get("mcp"), dict) else {}
+    servers["tracekin"] = {"type": "local", "command": [sys.executable, str(Path(__file__).resolve().with_name("mcp_server.py"))], "enabled": True}
+    config["mcp"] = servers
+    config.setdefault("$schema", "https://opencode.ai/config.json")
+    write_json(config_path, config)
+    return {"tracekin": "installed", "harness": "opencode", "plugin": str(loader), "config": str(config_path), "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
+
+
+def uninstall_opencode(opencode_home):
+    """Remove only Tracekin's loader and MCP server from OpenCode's user config."""
+    opencode_home = Path(opencode_home).expanduser().resolve()
+    loader = opencode_home / "plugins" / "tracekin.js"
+    config_path = opencode_home / "opencode.json"
+    removed = 0
+    if loader.exists():
+        loader.unlink()
+        removed += 1
+    config = load_json_object(config_path)
+    servers = config.get("mcp") if isinstance(config.get("mcp"), dict) else {}
+    if servers.pop("tracekin", None) is not None:
+        removed += 1
+        config["mcp"] = servers
+        write_json(config_path, config)
+    return {"tracekin": "uninstalled", "harness": "opencode", "removed": removed}
+
+
 def uninstall_gemini(gemini_home):
     """Remove only Tracekin's hook groups, MCP server and wrappers from Gemini CLI settings."""
     gemini_home = Path(gemini_home).expanduser().resolve()
@@ -1170,11 +1221,12 @@ def uninstall_cursor(cursor_home):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["hook", "status", "start", "install-cursor", "uninstall-cursor", "install-gemini", "uninstall-gemini"])
+    parser.add_argument("action", choices=["hook", "status", "start", "install-cursor", "uninstall-cursor", "install-gemini", "uninstall-gemini", "install-opencode", "uninstall-opencode"])
     parser.add_argument("--home", type=Path, default=home_dir())
     parser.add_argument("--harness", choices=("auto",) + HARNESSES, default="auto", help="hook payload dialect; auto-detected from the payload by default")
     parser.add_argument("--cursor-home", type=Path, default=Path("~/.cursor"), help="Cursor user config directory for install-cursor / uninstall-cursor")
     parser.add_argument("--gemini-home", type=Path, default=Path("~/.gemini"), help="Gemini CLI user config directory for install-gemini / uninstall-gemini")
+    parser.add_argument("--opencode-home", type=Path, default=Path("~/.config/opencode"), help="OpenCode user config directory for install-opencode / uninstall-opencode")
     args = parser.parse_args()
     if args.action == "start":
         data_dir = str(Path(args.home).expanduser().resolve())
@@ -1203,6 +1255,10 @@ def main():
         print(json.dumps(install_gemini(args.gemini_home), ensure_ascii=False))
     elif args.action == "uninstall-gemini":
         print(json.dumps(uninstall_gemini(args.gemini_home), ensure_ascii=False))
+    elif args.action == "install-opencode":
+        print(json.dumps(install_opencode(args.opencode_home), ensure_ascii=False))
+    elif args.action == "uninstall-opencode":
+        print(json.dumps(uninstall_opencode(args.opencode_home), ensure_ascii=False))
     else:
         # Pure read: no directory, schema, migration, or prune writes.
         print(json.dumps(Store(args.home, create=False).snapshot(), ensure_ascii=False))

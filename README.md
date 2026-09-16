@@ -1,12 +1,13 @@
 # Tracekin
 
-**Local-first activity companion for coding agents.** 在 Codex、Claude Code、Cursor、Gemini CLI 里以插件形式运行：安装即默认同步当前项目的活动事件到 Tracekin Cloud，敏感会话一句 `tracekin off` 即可暂停，永远不读会话记录文件。
+**Local-first activity companion for coding agents.** 在 Codex、Claude Code、Cursor、Gemini CLI、OpenCode 里以插件形式运行：安装即默认同步当前项目的活动事件到 Tracekin Cloud，敏感会话一句 `tracekin off` 即可暂停，永远不读会话记录文件。
 
-![version](https://img.shields.io/badge/version-0.7.0-blue)
+![version](https://img.shields.io/badge/version-0.8.0-blue)
 ![Codex](https://img.shields.io/badge/Codex-plugin-black)
 ![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-d97757)
 ![Cursor](https://img.shields.io/badge/Cursor-hooks-6e56cf)
 ![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-extension-1a73e8)
+![OpenCode](https://img.shields.io/badge/OpenCode-plugin-f97316)
 [![tests](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml/badge.svg)](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -18,7 +19,7 @@
 | 单会话暂停 | 把 `tracekin off` 作为会话第一条消息，只暂停这一个会话；其他会话和全局设置不受影响 |
 | 本地队列与回执 | 事件先进本机 SQLite 队列，由本地 companion 投递，面板显示待发送 / 已确认 / 已暂停会话 |
 | 只读状态 | MCP 工具 `tracekin_status` 纯读，不建表、不迁移、不 prune，数据库只读时也能返回 |
-| 四种 harness 共用一份数据 | `~/.tracekin` 一台机器一份授权、一个队列、一个面板 |
+| 五种 harness 共用一份数据 | `~/.tracekin` 一台机器一份授权、一个队列、一个面板 |
 
 ## 安装
 
@@ -28,18 +29,20 @@
 | Claude Code | `claude plugin marketplace add 0xblackbox/tracekin-remote-test` 然后 `claude plugin install tracekin@tracekin-remote-test` |
 | Cursor | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` 然后 `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor`，重启 Cursor |
 | Gemini CLI | `gemini extensions install https://github.com/0xblackbox/tracekin-remote-test`，重启 CLI；或在 checkout 里 `python3 plugins/tracekin/scripts/tracekin.py install-gemini` 写入 `~/.gemini/settings.json` |
+| OpenCode | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` 然后 `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode`，重启 OpenCode |
 
-升级：Codex 用 `codex plugin marketplace upgrade tracekin-remote-test` 后 remove / add；Claude Code 用 `claude plugin update tracekin@tracekin-remote-test`；Cursor 在 checkout 里 `git pull`；Gemini CLI 用 `gemini extensions update tracekin`。安装后从**项目目录**新建一个会话，让 `SessionStart` 完成绑定。
+升级：Codex 用 `codex plugin marketplace upgrade tracekin-remote-test` 后 remove / add；Claude Code 用 `claude plugin update tracekin@tracekin-remote-test`；Cursor 与 OpenCode 在 checkout 里 `git pull`；Gemini CLI 用 `gemini extensions update tracekin`。安装后从**项目目录**新建一个会话，让 `SessionStart` 完成绑定。
 
 ## 工作原理
 
 ```mermaid
 flowchart LR
-    subgraph harness["Codex / Claude Code / Cursor / Gemini CLI"]
+    subgraph harness["Codex / Claude Code / Cursor / Gemini CLI / OpenCode"]
         H1[SessionStart] --> S[tracekin.py start]
         H2[UserPromptSubmit<br/>PostToolUse<br/>Stop] --> K[tracekin.py hook]
         M[MCP tracekin_status] --> R[只读 snapshot]
     end
+    OC[OpenCode 事件总线<br/>opencode/tracekin.js] -.->|翻译成同样的 payload| K
     S -->|绑定项目 · 迁移 · 拉起 companion| DB[(~/.tracekin/tracekin.sqlite3)]
     K -->|归一化 · 会话指令 · 入队| DB
     R --> DB
@@ -68,7 +71,7 @@ flowchart LR
 | 字段 | 内容 |
 |------|------|
 | `id` `project_id` `session_id` `turn_id` | 每台设备随机 salt 的 HMAC-SHA256，原始 ID 和项目路径不出本机，跨设备不可关联 |
-| `event` `observed_at` `source` `privacy_mode` `synthetic` | 元数据；`source` 为 `codex_hook` / `claude_code_hook` / `cursor_hook` / `gemini_hook` |
+| `event` `observed_at` `source` `privacy_mode` `synthetic` | 元数据；`source` 为 `codex_hook` / `claude_code_hook` / `cursor_hook` / `gemini_hook` / `opencode_hook` |
 | `tool_category` | 仅 PostToolUse：`shell` / `edit` / `read` / `web` / `agent` / `other`，不含工具名 |
 | `task_data` | 明文：提示词、工具输入、工具输出、助手最终回复（视 harness 是否提供） |
 
@@ -119,6 +122,7 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 │   ├── .codex-plugin/  .claude-plugin/  .cursor-plugin/   三份插件清单
 │   ├── hooks/hooks.json     Codex 与 Claude Code 共用的 hooks
 │   ├── codex/mcp.json  .mcp.json  cursor/  gemini/       各 harness 的 MCP 配置与包装脚本
+│   ├── opencode/tracekin.js  OpenCode 插件（把事件总线翻译成同样的 hook 调用）
 │   ├── scripts/tracekin.py  serve.py  mcp_server.py      核心 · companion · MCP
 │   ├── scripts/test_tracekin.py  integration_smoke.py   测试
 │   ├── assets/              本地面板
@@ -142,6 +146,8 @@ python3 plugins/tracekin/scripts/test_tracekin.py
 ```bash
 python3 plugins/tracekin/scripts/integration_smoke.py
 ```
+
+OpenCode 插件的测试用 Node（或 Bun）驱动真实的 `opencode/tracekin.js`，机器上没有 Node 时会自动跳过。
 
 本地演示（本机接收器，零外发）：
 

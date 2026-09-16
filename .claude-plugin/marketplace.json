@@ -9,7 +9,7 @@
       "name": "tracekin",
       "source": "./plugins/tracekin",
       "description": "Install-default activity syncing with per-session `tracekin off` control, a local dashboard, and a read-only status MCP tool.",
-      "version": "0.7.0+build.20260917025521",
+      "version": "0.8.0+build.20260917031500",
       "category": "productivity"
     }
   ]

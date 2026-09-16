@@ -6,7 +6,7 @@
 
 | 表面 | 文件 | 职责 |
 |------|------|------|
-| Hooks | `hooks/hooks.json`（Codex、Claude Code）、`cursor/hooks.json`（Cursor）、仓库根 `hooks/hooks.json`（Gemini CLI 扩展） | `SessionStart` 绑定项目并拉起 companion；`UserPromptSubmit` / `PostToolUse` / `Stop` 采集，控制指令在采集前处理 |
+| Hooks | `hooks/hooks.json`（Codex、Claude Code）、`cursor/hooks.json`（Cursor）、仓库根 `hooks/hooks.json`（Gemini CLI 扩展）、`opencode/tracekin.js`（OpenCode 插件） | `SessionStart` 绑定项目并拉起 companion；`UserPromptSubmit` / `PostToolUse` / `Stop` 采集，控制指令在采集前处理 |
 | MCP | `codex/mcp.json`、`.mcp.json`、`cursor/mcp.json`、根 `gemini-extension.json` → `scripts/mcp_server.py` | `tracekin_status`、`tracekin_data_contract` 只读；`tracekin_allow` 修复 / 重新启用；`tracekin_deny` 全局紧急撤销 |
 | companion | `scripts/serve.py` | 投递 worker、`127.0.0.1` 面板、demo 模式的本地接收器 |
 | Skill | `skills/tracekin/SKILL.md` | 告诉模型如何响应 `tracekin off / on / status` 和状态查询 |
@@ -78,6 +78,26 @@ python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-gemi
 
 它把无参包装脚本合并进 `~/.gemini/settings.json` 的 `hooks`（`SessionStart`、`BeforeAgent`、`AfterTool`、`AfterAgent`，超时单位毫秒）和 `mcpServers`，保留其他条目；`uninstall-gemini` 只删自己的。若 `settings.json` 无法按 JSON 解析（例如带注释），安装器会中止而不是覆盖它。
 
+### OpenCode
+
+OpenCode 没有 stdin JSON 的 hook 命令，插件是 Bun 运行的 ESM 模块。`opencode/tracekin.js` 把 OpenCode 的事件翻译成其他 harness 同样的 payload 再交给 `tracekin.py`，不依赖任何 npm 包：
+
+| OpenCode 事件 | Tracekin 事件 |
+|------|------|
+| `event: session.created`（跳过带 `parentID` 的子代理会话） | SessionStart，项目取 `info.directory` |
+| `chat.message`（在模型看到提示词之前） | UserPromptSubmit，提示词取 `parts` 中非 synthetic 的文本 |
+| `tool.execute.after` | PostToolUse，`tool` / `callID` / `args` / `output` |
+| `event: session.idle` | Stop，助手回复来自该会话最近一条 assistant 消息的文本 part |
+
+安装：
+
+```bash
+git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode
+```
+
+安装器在 `~/.config/opencode/plugins/tracekin.js` 写一行加载器（re-export checkout 里的插件，`git pull` 即升级），并把 `tracekin` MCP 合并进 `~/.config/opencode/opencode.json` 的 `mcp`，保留其他键；`uninstall-opencode` 只删自己的。OpenCode 的配置允许 JSONC，但安装器只处理纯 JSON：解析失败会中止并提示，你可以手动把加载器和 MCP 条目加进去。可用 `TRACEKIN_PYTHON` 指定插件调用的 Python 解释器。
+
 ## 运行细节
 
 ### SessionStart 绑定
@@ -144,18 +164,19 @@ companion 的 worker 每 0.5 秒取最旧的待发送事件，发送期间不持
 
 ## 各 harness 差异
 
-| | Codex | Claude Code | Cursor | Gemini CLI |
-|------|------|------|------|------|
-| 事件名 | SessionStart / UserPromptSubmit / PostToolUse / Stop | 同 Codex | sessionStart / beforeSubmitPrompt / postToolUse / stop | SessionStart / BeforeAgent / AfterTool / AfterAgent |
-| 会话 / 轮次 ID | `session_id` / `turn_id` | `session_id` / `prompt_id` | `conversation_id` / `generation_id` | `session_id` / 无，本地按会话计数（`session_turns` 表） |
-| 工具输出字段 | `tool_response` | `tool_response`（2.1.273 实测）或 `tool_output`（文档） | `tool_output` | `tool_response`（对象） |
-| Stop 的助手回复 | 有 | 有（实测） | 无，`task_data` 为空 | 有，来自 `prompt_response` |
-| 项目来源 | `cwd` | `cwd` | `workspace_roots[0]`，用户级 hook 的工作目录是 `~/.cursor` | `cwd` |
-| hook 变量 | `${PLUGIN_ROOT}`，也导出 `CLAUDE_PLUGIN_ROOT` | `${CLAUDE_PLUGIN_ROOT}` | 无，包装脚本自行定位 | `${extensionPath}`，超时单位毫秒 |
-| hook 输出 | 忽略 | JSON 或 `{}` | `beforeSubmitPrompt` 必须 `{"continue": true}` | `{}`，不得输出非 JSON 文本 |
-| 安装 | marketplace | marketplace / `--plugin-dir` | `install-cursor` 或 `~/.cursor/plugins/local` | `gemini extensions install <repo>` 或 `install-gemini` |
+| | Codex | Claude Code | Cursor | Gemini CLI | OpenCode |
+|------|------|------|------|------|------|
+| 机制 | stdin JSON hook 命令 | 同 Codex | 同 Codex | 同 Codex | JS 插件订阅事件总线，再调用同一脚本 |
+| 事件名 | SessionStart / UserPromptSubmit / PostToolUse / Stop | 同 Codex | sessionStart / beforeSubmitPrompt / postToolUse / stop | SessionStart / BeforeAgent / AfterTool / AfterAgent | session.created / chat.message / tool.execute.after / session.idle |
+| 会话 / 轮次 ID | `session_id` / `turn_id` | `session_id` / `prompt_id` | `conversation_id` / `generation_id` | `session_id` / 无，本地按会话计数 | `sessionID` / 无，本地按会话计数 |
+| 工具输出字段 | `tool_response` | `tool_response`（2.1.273 实测）或 `tool_output`（文档） | `tool_output` | `tool_response`（对象） | `output.output` |
+| Stop 的助手回复 | 有 | 有（实测） | 无，`task_data` 为空 | 有，来自 `prompt_response` | 有，来自最近的 assistant 文本 part |
+| 项目来源 | `cwd` | `cwd` | `workspace_roots[0]`，用户级 hook 的工作目录是 `~/.cursor` | `cwd` | `session.directory`，退回插件的 `directory` |
+| hook 变量 | `${PLUGIN_ROOT}`，也导出 `CLAUDE_PLUGIN_ROOT` | `${CLAUDE_PLUGIN_ROOT}` | 无，包装脚本自行定位 | `${extensionPath}`，超时单位毫秒 | 无，插件按自身路径定位脚本 |
+| hook 输出 | 忽略 | JSON 或 `{}` | `beforeSubmitPrompt` 必须 `{"continue": true}` | `{}`，不得输出非 JSON 文本 | 不适用 |
+| 安装 | marketplace | marketplace / `--plugin-dir` | `install-cursor` 或 `~/.cursor/plugins/local` | `gemini extensions install <repo>` 或 `install-gemini` | `install-opencode` |
 
-`tracekin.py hook --harness auto` 会按字段自动识别方言，也可用 `--harness codex|claude-code|cursor|gemini` 强制。没有轮次 ID 的 harness 由 `Store.record` 按会话分配：新提示词开启第 N+1 轮，工具与结束事件归入当前轮；旧数据库缺少 `session_turns` 表时退回逐事件唯一 ID。
+`tracekin.py hook --harness auto` 会按字段自动识别方言，也可用 `--harness codex|claude-code|cursor|gemini|opencode` 强制。没有轮次 ID 的 harness 由 `Store.record` 按会话分配：新提示词开启第 N+1 轮，工具与结束事件归入当前轮；旧数据库缺少 `session_turns` 表时退回逐事件唯一 ID。
 
 ## 排错
 

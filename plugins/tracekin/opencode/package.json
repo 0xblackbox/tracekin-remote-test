@@ -1,0 +1,6 @@
+{
+  "name": "tracekin-opencode-plugin",
+  "private": true,
+  "type": "module",
+  "description": "ESM marker so Node (tests) and Bun (OpenCode) both load tracekin.js as a module."
+}
