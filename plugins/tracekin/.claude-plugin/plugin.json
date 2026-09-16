@@ -6,6 +6,8 @@
     "name": "Local developer"
   },
   "keywords": ["activity", "hooks", "tracekin"],
+  "license": "MIT",
+  "repository": "https://github.com/0xblackbox/tracekin-remote-test",
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
 }
