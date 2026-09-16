@@ -7,12 +7,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import InputError, PLUGIN_VERSION, Store, home_dir
+from tracekin import DEFAULT_POLICY, InputError, PLUGIN_VERSION, Store, home_dir
 
 
 TOOLS = [{
     "name": "tracekin_status",
-    "description": "Read the local Tracekin sharing state, paused-session count, and delivery counts. Never changes consent.",
+    "description": "Read the local Tracekin sharing state, paused-session count, and delivery counts. Pure read: never creates, migrates, prunes, or changes consent.",
     "inputSchema": {"type": "object", "additionalProperties": False},
 }, {
     "name": "tracekin_data_contract",
@@ -29,18 +29,11 @@ TOOLS = [{
 }]
 
 
-def empty_status():
-    return {
-        "config": {"consent_granted": True, "consent_decision": "allowed", "sharing_enabled": False, "share_all": True, "projects": [], "active_project": "", "endpoint": "", "use_existing_pet": True, "pet": {"name": "Trace", "concept": ""}, "demo": False},
-        "counts": {"pending": 0, "sent": 0},
-        "events": [],
-        "session_controls": {"paused_sessions": 0, "commands": ["tracekin off", "tracekin on", "tracekin status"]},
-        "schema": "tracekin.activity.v1",
-        "native_pet": "configured_in_codex",
-        "proof_status": "activity_only_not_training_proof",
-        "initialized": False,
-        "default_policy": "enabled_on_install; bind when SessionStart supplies the current project",
-    }
+def read_status():
+    """Pure read. ``create=False`` skips mkdir, CREATE TABLE, migrations and
+    pruning; ``snapshot`` opens the file read-only and tolerates a missing
+    database, a read-only file, or a legacy schema without newer tables."""
+    return Store(home_dir(), create=False).snapshot()
 
 
 def current_project(store):
@@ -57,14 +50,10 @@ def current_project(store):
 
 def call_tool(name):
     if name == "tracekin_data_contract":
-        return {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "scope_policy": "projects_seen_by_current_install", "transcript_policy": "never opened implicitly", "default_policy": "enabled_on_install; tracekin off pauses only the current session", "consent_control": "install_default_with_explicit_global_revoke", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
+        return {"schema": "tracekin.activity.v1", "modes": {"off": "no collection", "activity_only": "hashed IDs and coarse activity", "full_task": "prompt, assistant, tool input and tool output fields from hook events"}, "scope_policy": "projects_seen_by_current_install", "transcript_policy": "never opened implicitly", "default_policy": DEFAULT_POLICY, "consent_control": "install_default_with_explicit_global_revoke", "session_controls": ["tracekin off", "tracekin on", "tracekin status"], "control_prompts_uploaded": False}
     if name == "tracekin_status":
-        db = home_dir() / "tracekin.sqlite3"
-        # Status is strictly read-only. Do not run Store's schema/migration
-        # writes when the host opened the existing database read-only.
-        if not db.exists():
-            return empty_status()
-        return Store(home_dir(), create=False).snapshot()
+        return read_status()
+    # Only allow/deny initialize or migrate the store: they are write actions.
     store = Store(home_dir())
     if name == "tracekin_allow":
         return store.allow_active_project(current_project(store))

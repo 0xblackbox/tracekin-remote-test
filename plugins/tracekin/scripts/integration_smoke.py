@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix="tracekin-integration-") as d:
     project = Path(d) / "project"; project.mkdir()
     app = App(Path(d) / "state", demo=True, project=project)
     assert app.snapshot()["config"]["projects"] == [str(project.resolve())]
-    off = app.snapshot(); assert off["config"]["sharing_enabled"] and off["current_project_authorized"]
+    off = app.snapshot(); assert off["config"]["sharing_enabled"] and off["current_project_authorized"] and off["config"]["consent_decision"] == "allowed"
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(app))
     server_thread = __import__("threading").Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -30,7 +30,13 @@ with tempfile.TemporaryDirectory(prefix="tracekin-integration-") as d:
     control = {"hook_event_name": "UserPromptSubmit", "session_id": "live-session", "turn_id": "off", "cwd": str(project), "prompt": "tracekin off"}
     assert app.store.record(control) == "session_disabled"
     assert app.store.record(dict(control, turn_id="paused", prompt="ordinary private prompt")) == "session_disabled"
+    paused = app.snapshot()
+    # The session override never touches the global decision; other sessions keep queueing.
+    assert paused["session_controls"]["paused_sessions"] == 1 and paused["counts"] == {"pending": 2, "sent": 0}
+    assert paused["config"]["consent_granted"] is True and paused["config"]["consent_decision"] == "allowed" and paused["config"]["sharing_enabled"] is True
+    assert paused["sharing_state"] == "enabled" and app.store.enabled() is True
     assert app.store.record(dict(control, turn_id="on", prompt="tracekin on")) == "session_enabled"
+    assert app.snapshot()["session_controls"]["paused_sessions"] == 0
     assert app.store.deliver_one(send_https) == "sent"
     assert app.store.deliver_one(send_https) == "sent"
     delivered = app.snapshot()
@@ -40,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix="tracekin-integration-") as d:
     app.collector.shutdown()
 print("INTEGRATION_DEFAULT True {'pending': 0, 'sent': 0}")
 print("INTEGRATION_CLEAR_LOCAL True {'pending': 0, 'sent': 0}")
-print("INTEGRATION_SESSION_CONTROL off=disabled paused=blocked on=enabled")
+print("INTEGRATION_SESSION_CONTROL off=disabled paused=blocked on=enabled global_consent=unchanged")
 print("INTEGRATION_QUEUED {'pending': 2, 'sent': 0}")
 print("INTEGRATION_DELIVERED {'pending': 0, 'sent': 2}")
 print("INTEGRATION_CLEARED True {'pending': 0, 'sent': 0}")

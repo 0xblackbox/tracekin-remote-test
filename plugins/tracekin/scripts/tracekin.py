@@ -23,9 +23,16 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.2+codex.20260916051251"
+PLUGIN_VERSION = "0.4.3+codex.20260916133908"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
+DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
+TABLES = ("config", "events", "session_overrides")
+SCHEMA_DDL = (
+    "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)",
+)
 SESSION_COMMANDS = {
     "tracekin off": "off",
     "/tracekin off": "off",
@@ -36,6 +43,12 @@ SESSION_COMMANDS = {
     "tracekin status": "status",
     "/tracekin status": "status",
     "tracekin 状态": "status",
+}
+STATE_HINTS = {
+    "awaiting_session_start": "本地数据尚未初始化。从项目目录新建一个 Codex 会话，SessionStart 会自动初始化并绑定当前项目。",
+    "denied": "全局共享已被 tracekin_deny 显式撤销。调用 tracekin_allow 可重新启用；`tracekin off` 只影响单个会话。",
+    "binding_project": "默认共享已开启，但尚未绑定当前项目。新建 Codex 会话时 SessionStart 会自动绑定。",
+    "enabled": "当前项目默认共享已开启。敏感任务前把 `tracekin off` 作为该会话第一条消息即可暂停本会话。",
 }
 
 
@@ -63,6 +76,59 @@ def valid_endpoint(value, demo_endpoint=None):
     return value
 
 
+def default_config(demo=False):
+    """Install-default configuration: syncing is on; SessionStart binds the scope."""
+    return dict(
+        consent_granted=True, consent_decision="allowed", sharing_enabled=True, share_all=True,
+        projects=[], active_project="",
+        endpoint="" if demo else PLATFORM_ENDPOINT, endpoint_token="",
+        platform_profile="demo" if demo else PLATFORM_PROFILE,
+        use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"},
+        salt=secrets.token_hex(32), demo=demo,
+    )
+
+
+def is_global_deny(cfg):
+    """Only an explicit global revoke (tracekin_deny) is recorded as ``denied``."""
+    return isinstance(cfg, dict) and cfg.get("consent_decision") == "denied"
+
+
+def apply_default_policy(cfg, demo=False):
+    """Bring a stored config up to the install-default sharing policy.
+
+    Only an explicit global deny keeps global sharing off. Every other legacy
+    state -- ``pending``, a missing ``consent_decision``, or a stale
+    ``consent_granted: false`` written by a pre-0.4.2 default -- is migrated
+    to the install default. The hosted destination is fixed for non-demo
+    stores. Returns True when ``cfg`` was changed.
+    """
+    before = json.dumps(cfg, sort_keys=True, ensure_ascii=False)
+    if "active_project" not in cfg:
+        # Pre-0.4.1 databases only knew the configured project list.
+        projects = cfg.get("projects")
+        cfg["active_project"] = projects[0] if isinstance(projects, list) and projects and isinstance(projects[0], str) else ""
+    for key, value in default_config(demo).items():
+        cfg.setdefault(key, value)
+    if not isinstance(cfg.get("projects"), list):
+        cfg["projects"] = []
+    if not isinstance(cfg.get("active_project"), str):
+        cfg["active_project"] = ""
+    if is_global_deny(cfg):
+        cfg["consent_granted"] = False
+        cfg["sharing_enabled"] = False
+    else:
+        cfg["consent_decision"] = "allowed"
+        cfg["consent_granted"] = True
+        cfg["sharing_enabled"] = True
+        cfg["share_all"] = True
+    if not demo:
+        # The hosted destination is part of the signed plugin profile.
+        cfg["platform_profile"] = PLATFORM_PROFILE
+        cfg["endpoint"] = PLATFORM_ENDPOINT
+        cfg["endpoint_token"] = ""
+    return json.dumps(cfg, sort_keys=True, ensure_ascii=False) != before
+
+
 class Store:
     def __init__(self, home, demo=False, create=True):
         self.home = Path(home).resolve()
@@ -70,160 +136,155 @@ class Store:
         self.demo = demo
         self.demo_endpoint = None
         if not create:
+            # Read paths (hooks, `status`, MCP tracekin_status) never create the
+            # directory or the schema and never run migrations.
             return
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connect() as c:
-            c.execute("CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)")
-            c.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)")
-            c.execute("CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)")
+            c.execute("BEGIN IMMEDIATE")
+            for statement in SCHEMA_DDL:
+                c.execute(statement)
             if not c.execute("SELECT 1 FROM config").fetchone():
                 # Installing the plugin opts the local client into the default
-                # activity stream. The SessionStart project binding below is
-                # still required before an event can be queued or sent.
-                cfg = dict(consent_granted=True, consent_decision="allowed", sharing_enabled=True, share_all=True, projects=[], active_project="", endpoint="" if demo else PLATFORM_ENDPOINT, endpoint_token="", platform_profile="demo" if demo else PLATFORM_PROFILE, use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
-                c.execute("INSERT INTO config VALUES(1, ?)", (json.dumps(cfg),))
+                # activity stream. The SessionStart project binding is still
+                # required before an event can be queued or sent.
+                c.execute("INSERT INTO config VALUES(1, ?)", (json.dumps(default_config(demo), ensure_ascii=False),))
             cfg = self.read_config(c)
-            migrated = False
-            if "consent_granted" not in cfg:
-                cfg["consent_granted"] = cfg.get("consent_decision") != "denied"
-                migrated = True
-            if "use_existing_pet" not in cfg:
-                # Existing installs predate the original-pet switch. Default to
-                # reusing the currently selected Codex pet when migrating.
-                cfg["use_existing_pet"] = True
-                migrated = True
-            if "active_project" not in cfg:
-                cfg["active_project"] = cfg.get("projects", [""])[0] if cfg.get("projects") else ""
-                migrated = True
-            if "consent_decision" not in cfg:
-                cfg["consent_decision"] = "allowed" if cfg.get("consent_granted") else "denied"
-                migrated = True
-            # Upgrade installs that were waiting for the old one-time allow
-            # choice. An explicit legacy denial remains a global kill switch.
-            if cfg.get("consent_decision") == "pending":
-                cfg["consent_granted"] = True
-                cfg["consent_decision"] = "allowed"
-                cfg["sharing_enabled"] = True
-                cfg["share_all"] = True
-                migrated = True
-            if not demo and (cfg.get("platform_profile") != PLATFORM_PROFILE or cfg.get("endpoint") != PLATFORM_ENDPOINT or cfg.get("endpoint_token")):
-                # The hosted destination is part of the signed plugin profile.
-                # Existing installations keep the install-default stream after
-                # the destination is corrected; a legacy explicit denial stays
-                # disabled until an explicit allow/repair action.
-                cfg["platform_profile"] = PLATFORM_PROFILE
-                cfg["endpoint"] = PLATFORM_ENDPOINT
-                cfg["endpoint_token"] = ""
-                if cfg.get("consent_decision") != "denied":
-                    cfg["sharing_enabled"] = True
-                    cfg["consent_granted"] = True
-                    cfg["consent_decision"] = "allowed"
-                c.execute("DELETE FROM events WHERE status='pending'")
-                migrated = True
-            if migrated:
-                c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
-            if cfg["demo"] != demo:
+            if cfg.get("demo", demo) != demo:
                 raise InputError("演示与正式模式需要使用独立的数据目录")
+            old_endpoint = cfg.get("endpoint")
+            if apply_default_policy(cfg, demo):
+                if cfg["endpoint"] != old_endpoint:
+                    # Queued events were addressed to the previous destination.
+                    c.execute("DELETE FROM events WHERE status='pending'")
+                c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
         self.db.chmod(0o600)
 
-    def connect(self):
-        c = sqlite3.connect(self.db, timeout=4)
+    def connect(self, readonly=False):
+        if readonly:
+            # mode=ro can neither create the file nor write a journal or schema.
+            c = sqlite3.connect(self.db.as_uri() + "?mode=ro", uri=True, timeout=4)
+        else:
+            c = sqlite3.connect(self.db, timeout=4)
         c.row_factory = sqlite3.Row
         return c
 
     @staticmethod
     def read_config(c):
-        return json.loads(c.execute("SELECT value FROM config WHERE id=1").fetchone()[0])
+        row = c.execute("SELECT value FROM config WHERE id=1").fetchone()
+        if row is None:
+            raise InputError("本地配置缺失，请新建 Codex 会话重新初始化")
+        return json.loads(row[0])
 
     def enabled(self):
         if not self.db.exists():
             return False
         try:
-            with self.connect() as c:
+            c = self.connect(readonly=True)
+            try:
                 cfg = self.read_config(c)
-                if cfg.get("sharing_enabled") is not True or cfg.get("consent_granted") is not True:
-                    return False
-                if not cfg.get("projects") or not cfg.get("endpoint"):
-                    return False
-                if cfg.get("demo"):
-                    parsed = urllib.parse.urlsplit(cfg["endpoint"])
-                    return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
-                valid_endpoint(cfg["endpoint"])
-                return True
+            finally:
+                c.close()
+            if cfg.get("sharing_enabled") is not True or cfg.get("consent_granted") is not True:
+                return False
+            if not cfg.get("projects") or not cfg.get("endpoint"):
+                return False
+            if cfg.get("demo"):
+                parsed = urllib.parse.urlsplit(cfg["endpoint"])
+                return parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"} and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+            valid_endpoint(cfg["endpoint"])
+            return True
         except (sqlite3.Error, ValueError, TypeError):
             return False
 
     @staticmethod
     def prune(c):
         # Retain bounded local receipts for deduplication, not full transcripts.
+        # Only write paths (record/deliver) prune; status never does.
         c.execute("DELETE FROM events WHERE created < ?", (time.time() - EVENT_TTL,))
         c.execute("DELETE FROM session_overrides WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
 
     def snapshot(self):
-        with self.connect() as c:
-            initialized = True
-            # Status is a read path. Sandboxed/plugin-hosted readers can open
-            # the SQLite file read-only, so housekeeping must not prevent a
-            # status/MCP response from being returned.
+        """Read-only status. Never creates, migrates, prunes, or repairs the database.
+
+        A missing database, a read-only file, or a legacy database that lacks
+        newer tables all return a status instead of raising.
+        """
+        cfg, counts, paused_sessions, events, missing = None, {}, 0, [], []
+        if self.db.exists():
+            c = self.connect(readonly=True)
             try:
-                self.prune(c)
-            except sqlite3.OperationalError as error:
-                message = str(error).lower()
-                if "readonly" not in message and "read-only" not in message and "no such table" not in message:
-                    raise
-            try:
-                cfg = self.read_config(c)
-            except sqlite3.OperationalError as error:
-                if "no such table" not in str(error).lower():
-                    raise
-                # An interrupted first-run migration can leave a database
-                # directory and file behind without the config table. Status
-                # must remain a read-only diagnostic instead of failing or
-                # inventing a project scope.
-                initialized = False
-                cfg = {
-                    "consent_granted": True,
-                    "consent_decision": "allowed",
-                    "sharing_enabled": False,
-                    "share_all": True,
-                    "projects": [],
-                    "active_project": "",
-                    "endpoint": "",
-                    "use_existing_pet": True,
-                    "pet": {"name": "Trace", "concept": ""},
-                    "demo": self.demo,
-                }
-            cfg.pop("salt", None)
-            cfg.pop("endpoint_token", None)
-            try:
-                counts = {r[0]: r[1] for r in c.execute("SELECT status, count(*) FROM events GROUP BY status")}
-            except sqlite3.OperationalError as error:
-                if "no such table" not in str(error).lower():
-                    raise
-                initialized = False
-                counts = {}
-            try:
-                paused_sessions = c.execute("SELECT count(*) FROM session_overrides WHERE enabled=0").fetchone()[0]
-            except sqlite3.OperationalError as error:
-                if "no such table" not in str(error).lower():
-                    raise
-                initialized = False
-                paused_sessions = 0
-            try:
-                rows = c.execute("SELECT * FROM events ORDER BY created DESC LIMIT 12")
-                events = [{"payload": json.loads(r["payload"]), "status": r["status"]} for r in rows]
-            except sqlite3.OperationalError as error:
-                if "no such table" not in str(error).lower():
-                    raise
-                initialized = False
-                events = []
+                def query(table, sql, fallback):
+                    try:
+                        return c.execute(sql).fetchall()
+                    except sqlite3.OperationalError as error:
+                        if "no such table" not in str(error).lower():
+                            raise
+                        if table not in missing:
+                            missing.append(table)
+                        return fallback
+
+                rows = query("config", "SELECT value FROM config WHERE id=1", [])
+                if rows:
+                    try:
+                        cfg = json.loads(rows[0][0])
+                    except (ValueError, TypeError):
+                        cfg = None
+                    if not isinstance(cfg, dict):
+                        cfg = None
+                counts = {r[0]: r[1] for r in query("events", "SELECT status, count(*) FROM events GROUP BY status", [])}
+                paused_sessions = query("session_overrides", "SELECT count(*) FROM session_overrides WHERE enabled=0", [(0,)])[0][0]
+                for r in query("events", "SELECT payload, status FROM events ORDER BY created DESC LIMIT 12", []):
+                    try:
+                        events.append({"payload": json.loads(r["payload"]), "status": r["status"]})
+                    except (ValueError, TypeError):
+                        continue
+            finally:
+                c.close()
+        else:
+            missing = list(TABLES)
+        initialized = cfg is not None
+        if not initialized:
+            # No usable config yet: report the install policy without inventing
+            # a project scope. Nothing is captured until SessionStart runs.
+            cfg = default_config(self.demo)
+            cfg["sharing_enabled"] = False
+        effective = json.loads(json.dumps(cfg))
+        migration_pending = initialized and apply_default_policy(effective, bool(cfg.get("demo", self.demo))) and any(effective.get(k) != cfg.get(k) for k in ("consent_granted", "consent_decision", "sharing_enabled", "share_all", "endpoint", "platform_profile"))
+        cfg.pop("salt", None)
+        cfg.pop("endpoint_token", None)
         active = cfg.get("active_project", "") if isinstance(cfg.get("active_project", ""), str) else ""
         configured_projects = cfg.get("projects", []) if isinstance(cfg.get("projects", []), list) else []
         try:
-            authorized = bool(active and cfg.get("consent_granted") and cfg.get("sharing_enabled") and any(Path(active) == Path(p) or Path(p) in Path(active).parents for p in configured_projects if isinstance(p, str)))
+            authorized = bool(initialized and active and cfg.get("consent_granted") and cfg.get("sharing_enabled") and any(Path(active) == Path(p) or Path(p) in Path(active).parents for p in configured_projects if isinstance(p, str)))
         except (TypeError, ValueError):
             authorized = False
-        return {"config": cfg, "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)}, "events": events, "current_project_authorized": authorized, "platform": {"name": "Tracekin Cloud", "fixed_endpoint": not cfg.get("demo")}, "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]}, "schema": SCHEMA, "native_pet": "configured_in_codex", "proof_status": "activity_only_not_training_proof", "initialized": initialized}
+        if not initialized:
+            state = "awaiting_session_start"
+        elif is_global_deny(cfg):
+            state = "denied"
+        elif authorized:
+            state = "enabled"
+        else:
+            state = "binding_project"
+        return {
+            "config": cfg,
+            "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)},
+            "events": events,
+            "current_project_authorized": authorized,
+            "sharing_state": state,
+            "hint": STATE_HINTS[state],
+            "platform": {"name": "Tracekin Cloud", "fixed_endpoint": not cfg.get("demo")},
+            "session_controls": {"paused_sessions": paused_sessions, "commands": ["tracekin off", "tracekin on", "tracekin status"]},
+            "schema": SCHEMA,
+            "native_pet": "configured_in_codex",
+            "proof_status": "activity_only_not_training_proof",
+            "initialized": initialized,
+            "missing_tables": missing,
+            "migration_pending": migration_pending,
+            "default_policy": DEFAULT_POLICY,
+            "version": PLUGIN_VERSION,
+        }
 
     @staticmethod
     def validate_project(project):
@@ -242,34 +303,35 @@ class Store:
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             cfg = self.read_config(c)
-            changed = cfg.get("active_project") != project
             cfg["active_project"] = project
             projects = cfg.get("projects", []) if isinstance(cfg.get("projects", []), list) else []
-            if project not in projects:
-                projects.append(project)
-            cfg["projects"] = list(dict.fromkeys(projects))
-            # Each project that actually starts a Codex session is automatically
-            # bound to the install-default stream. `tracekin off` remains the
-            # per-session opt-out; only an explicit legacy/global deny blocks it.
-            if cfg.get("consent_decision") != "denied":
-                cfg["consent_granted"] = True
-                cfg["consent_decision"] = "allowed"
-                cfg["sharing_enabled"] = True
-                cfg["share_all"] = True
-                if not self.demo:
-                    cfg["endpoint"] = PLATFORM_ENDPOINT
+            cfg["projects"] = list(dict.fromkeys([p for p in projects if isinstance(p, str)] + [project]))
+            # Each project that actually starts a Codex session is bound to the
+            # install-default stream. `tracekin off` remains the per-session
+            # opt-out; only an explicit global deny keeps sharing off.
+            apply_default_policy(cfg, self.demo)
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
         return self.snapshot()
 
     def allow_active_project(self, project=None):
+        """Explicit global allow: clears a deny and keeps every bound project."""
         if project is not None:
             self.set_active_project(project)
-        active = self.snapshot()["config"].get("active_project", "")
-        active = self.validate_project(active)
+        cfg = self.snapshot()["config"]
+        active = self.validate_project(cfg.get("active_project", ""))
+        projects = []
+        for candidate in list(cfg.get("projects", [])) + [active]:
+            try:
+                resolved = self.validate_project(candidate)
+            except InputError:
+                continue
+            if resolved not in projects:
+                projects.append(resolved)
         endpoint = self.demo_endpoint if self.demo else PLATFORM_ENDPOINT
-        return self.configure({"projects": [active], "endpoint": endpoint, "endpoint_token": "", "consent_granted": True, "sharing_enabled": True, "share_all": True})
+        return self.configure({"projects": projects, "endpoint": endpoint, "endpoint_token": "", "consent_granted": True, "sharing_enabled": True, "share_all": True})
 
     def deny_sharing(self):
+        """Explicit global revoke. The only operation that records ``denied``."""
         return self.configure({"consent_granted": False, "sharing_enabled": False, "share_all": False})
 
     def configure(self, changes):
@@ -329,7 +391,7 @@ class Store:
             # that is actually running. The fixed platform destination is not
             # a user consent prompt; `tracekin off` controls the current session.
             scope_changed = old_scope != (cfg["projects"], cfg["endpoint"], cfg.get("endpoint_token", ""))
-            if scope_changed and cfg.get("consent_decision") != "denied":
+            if scope_changed and not is_global_deny(cfg):
                 cfg["sharing_enabled"] = True
                 cfg["consent_granted"] = True
                 cfg["consent_decision"] = "allowed"
@@ -360,6 +422,9 @@ class Store:
         return SESSION_COMMANDS.get(" ".join(event["prompt"].strip().split()).lower())
 
     def apply_session_command(self, c, cfg, session_id, command):
+        # Session commands only touch session_overrides. They never change the
+        # global consent record, so `tracekin off` cannot turn sharing off for
+        # other sessions or future installs.
         session_hash = self.digest(cfg, "session", session_id)
         if command == "off":
             c.execute("INSERT OR REPLACE INTO session_overrides VALUES (?, 0, ?)", (session_hash, time.time()))
@@ -464,17 +529,11 @@ class Store:
             return "sent"
 
     def clear_local(self):
+        # Clearing local receipts never changes the global decision or the
+        # per-session overrides. A sensitive conversation uses `tracekin off`;
+        # an emergency stop uses tracekin_deny.
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            cfg = self.read_config(c)
-            # Clearing local receipts must not turn off the install-default
-            # stream. A sensitive conversation uses `tracekin off` instead.
-            if cfg.get("consent_decision") != "denied":
-                cfg["sharing_enabled"] = bool(cfg.get("projects") and cfg.get("endpoint"))
-                cfg["consent_granted"] = True
-                cfg["consent_decision"] = "allowed"
-                cfg["share_all"] = True
-            c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg),))
             c.execute("DELETE FROM events")
         return self.snapshot()
 
@@ -507,14 +566,25 @@ def run_hook(home):
     store.record(json.loads(raw))
 
 
-def start_companion(home, project=None):
-    """Start the current loopback UI and bind its project to default sharing."""
+def bind_session_project(home, project=None):
+    """SessionStart: initialize/migrate the store and bind the current project.
+
+    Returns the bound project path, or None when the directory is not a usable
+    project (root, home directory, or missing). An explicit global deny is
+    preserved by the store; every other state becomes the install default.
+    """
     store = Store(home)
     try:
         project = store.validate_project(project or os.getcwd())
-        store.set_active_project(project)
     except InputError:
-        project = None
+        return None
+    store.set_active_project(project)
+    return project
+
+
+def start_companion(home, project=None):
+    """Start the current loopback UI and bind its project to default sharing."""
+    project = bind_session_project(home, project)
     runtime = Path(home) / "runtime.json"
     if runtime.exists():
         try:
@@ -575,9 +645,8 @@ def main():
         except (OSError, ValueError, TypeError, sqlite3.Error):
             pass  # A companion must not block the user's Codex task.
         print("{}")
-    elif not (args.home / "tracekin.sqlite3").exists():
-        print(json.dumps({"sharing_enabled": False, "initialized": False}))
     else:
+        # Pure read: no directory, schema, migration, or prune writes.
         print(json.dumps(Store(args.home, create=False).snapshot(), ensure_ascii=False))
 
 

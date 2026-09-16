@@ -42,7 +42,20 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
-Version `0.4.2` enables syncing automatically after installation, binds projects on SessionStart, keeps `tracekin off` as the normal per-session privacy control, and makes read-only status queries safe for both read-only files and legacy databases missing newer tables.
+Version `0.4.3` makes the install default the single source of truth: a fresh database is created enabled, every legacy database that is not an explicit global deny is migrated to enabled on the next `SessionStart`, `tracekin off` only writes a per-session override, and `tracekin_status` is a pure read (no `CREATE TABLE`, migration, or prune) that also works on read-only files and legacy schemas.
+
+## 默认共享状态与迁移规则（0.4.3）
+
+| 场景 | 结果 |
+|------|------|
+| 全新安装（首次创建数据库） | `consent_granted=true`、`consent_decision=allowed`、`sharing_enabled=true`、`share_all=true`，`endpoint` 固定为 Tracekin Cloud |
+| 首次 `SessionStart` | 自动把当前项目写入 `projects` 并设为 `active_project`，`current_project_authorized` 变为 `true` |
+| 旧数据库 `consent_decision=pending`，或没有 `consent_decision`，或只是 `consent_granted=false` | 下一次 `SessionStart`（或任何写路径）迁移为默认开启 |
+| 旧数据库明确记录 `consent_decision=denied`（由 `tracekin_deny` 写入） | 保留拒绝状态；`SessionStart` 只绑定项目，不会覆盖拒绝；只有 `tracekin_allow` 能恢复 |
+| `tracekin off` / `tracekin on` | 只写 `session_overrides` 表，不改全局 `consent_granted`；其他会话继续默认共享 |
+| `tracekin status` / MCP `tracekin_status` | 纯读：不建表、不迁移、不 prune；数据库只读或缺少 `session_overrides` 表时仍返回 `counts=0`、`paused_sessions=0` |
+
+状态响应中的 `sharing_state` 取值：`awaiting_session_start`（尚无数据库）、`binding_project`（已开启但未绑定当前项目）、`enabled`（当前项目已授权）、`denied`（显式全局拒绝）；`migration_pending=true` 表示数据库仍是旧版本状态，下一次 `SessionStart` 会迁移；`hint` 给出对应的下一步操作。
 
 It does **not** claim that activity metadata is a useful training corpus, that a task is high quality, or that a token is owed. A later data product needs a separately consented human-reviewed sample lane and a published reward formula.
 
@@ -123,5 +136,6 @@ Tracekin remote smoke test: hooks
 - 面板显示“仅本机演示 · 零外发”：你打开的是 demo，关闭它并使用 `SessionStart` 启动的生产面板；
 - 没有任何事件：重启 Codex，确认新会话已启用 Tracekin、Hooks 已信任，并确认会话工作目录是目标项目；敏感会话若之前输入过 `tracekin off`，先输入 `tracekin on`；
 - 项目不匹配：从目标项目新建会话，让 `SessionStart` 重新识别当前目录；
-- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.2`；
+- `tracekin_status` 显示 `sharing_enabled=false`：先用 `codex plugin list --json` 确认 Codex 实际加载的 Tracekin 版本。插件缓存里的旧版本（例如 `0.1.0`）会继续沿用旧默认值和旧的 MCP 状态路径，必须按上文 remove/add 重装并重启 Codex；升级后从项目目录新建会话，`SessionStart` 会把旧数据库迁移为默认开启。若 `sharing_state` 为 `denied`，说明曾显式调用过 `tracekin_deny`，请调用 `tracekin_allow`；
+- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.3`；
 - 本机面板没有远程电脑数据：这是预期行为；本地面板只显示当前电脑的本地发送队列和回执。
