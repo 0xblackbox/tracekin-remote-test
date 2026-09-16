@@ -23,7 +23,7 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.0+codex.20260916121920"
+PLUGIN_VERSION = "0.4.1+codex.20260916125315"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 SESSION_COMMANDS = {
@@ -161,7 +161,14 @@ class Store:
 
     def snapshot(self):
         with self.connect() as c:
-            self.prune(c)
+            # Status is a read path. Sandboxed/plugin-hosted readers can open
+            # the SQLite file read-only, so housekeeping must not prevent a
+            # status/MCP response from being returned.
+            try:
+                self.prune(c)
+            except sqlite3.OperationalError as error:
+                if "readonly" not in str(error).lower() and "read-only" not in str(error).lower():
+                    raise
             cfg = self.read_config(c)
             cfg.pop("salt", None)
             cfg.pop("endpoint_token", None)

@@ -1,6 +1,6 @@
 # Tracekin：另一台电脑完整 Hooks/MCP 测试
 
-请先阅读 `plugins/tracekin/README.md`。版本 `0.4.0` 安装后自动识别当前项目并开启默认同步，提供 Dashboard 和 `tracekin off/on/status` 当前会话控制。
+请先阅读 `plugins/tracekin/README.md`。版本 `0.4.1` 安装后自动识别当前项目并开启默认同步，并修复只读数据库状态查询，提供 Dashboard 和 `tracekin off/on/status` 当前会话控制。
 
 ## 快速安装
 
@@ -21,4 +21,4 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
-升级后应显示版本 `0.4.0+codex.<cachebuster>`；重启 Codex Desktop 后，在 Hooks 页面重新审阅当前定义。
+升级后应显示版本 `0.4.1+codex.<cachebuster>`；重启 Codex Desktop 后，在 Hooks 页面重新审阅当前定义。

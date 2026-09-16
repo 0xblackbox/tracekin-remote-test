@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,7 @@ from tracekin import PLATFORM_ENDPOINT, PLUGIN_VERSION, Store
 
 
 def main():
-    assert PLUGIN_VERSION == "0.4.0+codex.20260916121920"
+    assert PLUGIN_VERSION == "0.4.1+codex.20260916125315"
     with tempfile.TemporaryDirectory(prefix="tracekin-test-") as d:
         root = Path(d) / "project"; root.mkdir()
         absent = Path(d) / "absent"
@@ -32,6 +33,11 @@ def main():
         assert store.snapshot()["config"]["use_existing_pet"] is True
         assert store.snapshot()["config"]["consent_decision"] == "allowed"
         assert store.snapshot()["config"]["sharing_enabled"] is True
+        original_prune = store.prune
+        store.prune = lambda _connection: (_ for _ in ()).throw(sqlite3.OperationalError("attempt to write a readonly database"))
+        readonly_snapshot = store.snapshot()
+        assert readonly_snapshot["config"]["sharing_enabled"] is True
+        store.prune = original_prune
         assert store.configure({"use_existing_pet": False})["config"]["use_existing_pet"] is False
         assert store.configure({"use_existing_pet": True})["config"]["use_existing_pet"] is True
         configured = store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT})
