@@ -1,6 +1,6 @@
 {
   "name": "tracekin",
-  "version": "0.4.5+codex.20260916143511",
+  "version": "0.4.6+codex.20260916150826",
   "description": "A local-first Codex companion with install-default syncing, visible receipts, and per-session pause commands.",
   "author": {
     "name": "Local developer"

@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -26,7 +27,7 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.5+codex.20260916143511"
+PLUGIN_VERSION = "0.4.6+codex.20260916150826"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
@@ -47,6 +48,36 @@ SESSION_COMMANDS = {
     "/tracekin status": "status",
     "tracekin 状态": "status",
 }
+COMMAND_DECORATION = re.compile(r"[`*_~\"'“”‘’「」（）()\[\]<>]")
+COMMAND_TRAILING_PUNCTUATION = re.compile(r"[\s.。!！?？,，;；:：]+$")
+
+
+def normalize_command_text(text):
+    """Reduce a typed control line to the bare command: drop markdown/quote
+    decorations, trailing punctuation, letter case and extra whitespace."""
+    text = COMMAND_DECORATION.sub("", text)
+    text = COMMAND_TRAILING_PUNCTUATION.sub("", text.strip())
+    return " ".join(text.lower().split())
+
+
+def session_command(prompt):
+    """Recognize `tracekin off|on|status` even when the client wrapped it in
+    backticks or quotes, added punctuation, or put a task after the first line.
+
+    The privacy-safe direction wins: a prompt that starts with the command line
+    is treated as the command, so nothing from that turn is uploaded.
+    """
+    if not isinstance(prompt, str):
+        return None
+    whole = normalize_command_text(prompt)
+    if whole in SESSION_COMMANDS:
+        return SESSION_COMMANDS[whole]
+    lines = [line for line in prompt.strip().splitlines() if line.strip()]
+    if lines:
+        return SESSION_COMMANDS.get(normalize_command_text(lines[0]))
+    return None
+
+
 STATE_HINTS = {
     "awaiting_session_start": "本地数据尚未初始化。从项目目录新建一个 Codex 会话，SessionStart 会自动初始化并绑定当前项目。",
     "denied": "全局共享已被 tracekin_deny 显式撤销。调用 tracekin_allow 可重新启用；`tracekin off` 只影响单个会话。",
@@ -435,7 +466,7 @@ class Store:
     def parse_session_command(event):
         if event.get("hook_event_name") != "UserPromptSubmit" or not isinstance(event.get("prompt"), str):
             return None
-        return SESSION_COMMANDS.get(" ".join(event["prompt"].strip().split()).lower())
+        return session_command(event["prompt"])
 
     def apply_session_command(self, c, cfg, session_id, command):
         # Session commands only touch session_overrides. They never change the

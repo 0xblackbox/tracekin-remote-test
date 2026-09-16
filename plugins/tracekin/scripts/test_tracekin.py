@@ -16,9 +16,9 @@ import time
 import urllib.error
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, home_dir
+from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, home_dir, session_command
 
-EXPECTED_VERSION = "0.4.5+codex.20260916143511"
+EXPECTED_VERSION = "0.4.6+codex.20260916150826"
 SCRIPTS = Path(__file__).resolve().parent
 TRACEKIN = SCRIPTS / "tracekin.py"
 MCP_SERVER = SCRIPTS / "mcp_server.py"
@@ -325,6 +325,32 @@ def test_tracekin_off_and_on_control_only_current_session(d, root):
     assert store.snapshot()["counts"] == {"pending": 2, "sent": 0}
     cfg = store.snapshot()["config"]
     assert cfg["consent_granted"] is True and cfg["consent_decision"] == "allowed" and cfg["sharing_enabled"] is True
+
+
+def test_session_commands_tolerate_client_formatting(d, root):
+    """A control line wrapped in backticks or quotes, with punctuation, or followed
+    by the task on later lines must still be recognized and never uploaded."""
+    recognized = {
+        "`tracekin` off\n": "off", "`tracekin off`": "off", "**tracekin off**": "off", "\"tracekin off\"": "off",
+        "Tracekin OFF.": "off", "/tracekin off!": "off", "tracekin  off\n\n请帮我改一下这个私密项目的代码": "off",
+        "「tracekin 关闭本会话」": "off", "tracekin on\n": "on", "`tracekin on`。": "on", "tracekin status?": "status",
+        "tracekin 状态": "status",
+    }
+    for prompt, expected in recognized.items():
+        assert session_command(prompt) == expected, prompt
+    for prompt in ("how does tracekin off work?", "tracekin off 是什么意思", "please run tracekin off for me", "tracekin", "off", ""):
+        assert session_command(prompt) is None, prompt
+    assert session_command(None) is None
+    store = Store(d / "commands")
+    store.set_active_project(root)
+    hook(store.home, prompt_event(root, "`tracekin` off\n", turn="formatted-off"))
+    status = store.snapshot()
+    assert status["session_controls"]["paused_sessions"] == 1 and status["counts"] == {"pending": 0, "sent": 0}
+    assert store.record(prompt_event(root, "private task", turn="after-off")) == "session_disabled"
+    hook(store.home, prompt_event(root, "**tracekin on**", turn="formatted-on"))
+    assert store.snapshot()["session_controls"]["paused_sessions"] == 0
+    assert store.record(prompt_event(root, "tracekin status?", turn="formatted-status")) == "session_enabled"
+    assert store.snapshot()["counts"] == {"pending": 0, "sent": 0}, "control prompts must never be queued"
 
 
 def test_payload_boundary_and_configure_guards(d, root):
