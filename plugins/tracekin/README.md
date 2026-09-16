@@ -42,6 +42,8 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
+Version `0.4.5` hardens delivery. The receiver rejecting one event (HTTP 400/413/415/422) no longer blocks every event behind it: that event is dropped and the dashboard shows how many were skipped. HTTP 401/403 is reported as `接收服务拒绝授权` and keeps retrying with backoff, the send timeout is 10 s to survive Cloud Run cold starts, and the database write lock is no longer held during the network call, so hooks keep recording while a slow receiver is contacted. The panel shows the last delivery error next to the connection state.
+
 Version `0.4.4` fixes the data-directory split between hooks and the MCP server: Codex injects `PLUGIN_DATA` into hook commands only, never into a plugin's `.mcp.json` server, so earlier versions let `SessionStart` write to `~/.codex/plugins/data/tracekin-<marketplace>/tracekin/` while `tracekin_status` read `~/.codex/tracekin/` and stayed at `binding_project` forever. Every surface now resolves `$CODEX_HOME/tracekin` (default `~/.codex/tracekin`), status reports `data_dir`, the `SessionStart` output includes `data_dir` plus any error instead of failing silently, and the first `SessionStart` after the upgrade stops a companion that an older hook left running under the `PLUGIN_DATA` directory.
 
 Version `0.4.3` makes the install default the single source of truth: a fresh database is created enabled, every legacy database that is not an explicit global deny is migrated to enabled on the next `SessionStart`, `tracekin off` only writes a per-session override, and `tracekin_status` is a pure read (no `CREATE TABLE`, migration, or prune) that also works on read-only files and legacy schemas.
@@ -142,5 +144,5 @@ Tracekin remote smoke test: hooks
 - 项目不匹配：从目标项目新建会话，让 `SessionStart` 重新识别当前目录；
 - `tracekin_status` 显示 `sharing_enabled=false`：先用 `codex plugin list --json` 确认 Codex 实际加载的 Tracekin 版本。插件缓存里的旧版本（例如 `0.1.0`）会继续沿用旧默认值和旧的 MCP 状态路径，必须按上文 remove/add 重装并重启 Codex；升级后从项目目录新建会话，`SessionStart` 会把旧数据库迁移为默认开启。若 `sharing_state` 为 `denied`，说明曾显式调用过 `tracekin_deny`，请调用 `tracekin_allow`；
 - hooks 已信任、已重启，新会话仍是 `binding_project` 且提示数据迁移待执行：这是 `0.4.3` 及更早版本的 hook 与 MCP 读写不同目录导致的，升级到 `0.4.4`。可以用 `ls ~/.codex/plugins/data/tracekin-*/tracekin/` 验证旧版 hook 写到了插件数据目录；升级后对比 `tracekin_status` 里的 `data_dir` 与 SessionStart 输出的 `data_dir` 应一致；
-- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.4`；
+- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.5`。面板的"最近错误"会给出原因：`HTTP 401 unauthorized` 表示接收服务要求 Bearer token，而正式版插件不发送 token，需要在 Cloud Run 上移除 `TRACEKIN_TOKEN`；`HTTP 413` 等表示单条事件被拒绝并已跳过；`URLError`/`TimeoutError` 表示网络不通；
 - 本机面板没有远程电脑数据：这是预期行为；本地面板只显示当前电脑的本地发送队列和回执。

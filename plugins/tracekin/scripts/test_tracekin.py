@@ -3,6 +3,7 @@
 
 Runs with the standard library only: ``python3 test_tracekin.py``.
 """
+import io
 import json
 import os
 from pathlib import Path
@@ -12,11 +13,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, home_dir
 
-EXPECTED_VERSION = "0.4.4+codex.20260916141330"
+EXPECTED_VERSION = "0.4.5+codex.20260916143511"
 SCRIPTS = Path(__file__).resolve().parent
 TRACEKIN = SCRIPTS / "tracekin.py"
 MCP_SERVER = SCRIPTS / "mcp_server.py"
@@ -355,6 +357,54 @@ def test_payload_boundary_and_configure_guards(d, root):
         except ValueError:
             pass
     assert_enabled_default(store.snapshot()["config"])
+
+
+def test_delivery_outcomes_never_block_the_queue(d, root):
+    store = Store(d / "deliver")
+    store.set_active_project(root)
+    assert store.record(tool_event(root, turn="t1", call="c1")) == "queued"
+    assert store.record(tool_event(root, turn="t2", call="c2")) == "queued"
+
+    def http_error(code, body=b'{"error":"unauthorized"}'):
+        def sender(endpoint, payload, token):
+            raise urllib.error.HTTPError(endpoint, code, "error", {}, io.BytesIO(body))
+        return sender
+
+    def raising(error):
+        def sender(endpoint, payload, token):
+            raise error
+        return sender
+
+    # Auth and transport failures keep the event and report the reason.
+    assert store.deliver_one(http_error(401)) == "unauthorized" and store.last_delivery_error == "HTTP 401 unauthorized"
+    assert store.deliver_one(http_error(503, b"upstream")) == "retry" and store.last_delivery_error == "HTTP 503"
+    assert store.deliver_one(raising(urllib.error.URLError("timed out"))) == "retry" and store.last_delivery_error == "URLError"
+    assert store.deliver_one(lambda *_: False) == "retry" and store.last_delivery_error == "unacknowledged"
+    assert store.snapshot()["counts"] == {"pending": 2, "sent": 0}
+    # A receiver that refuses the event itself must not block the events behind it.
+    assert store.deliver_one(http_error(413, b'{"error":"body_too_large"}')) == "rejected"
+    assert store.last_delivery_error == "HTTP 413 body_too_large"
+    assert store.snapshot()["counts"] == {"pending": 1, "sent": 0}
+    # The write lock is released during the send: hooks keep recording meanwhile.
+    seen = {}
+
+    def slow_receiver(endpoint, payload, token):
+        seen.update(endpoint=endpoint, token=token, event=payload["event"])
+        assert store.record(tool_event(root, session="other-session", turn="t3", call="c3")) == "queued"
+        return True
+
+    assert store.deliver_one(slow_receiver) == "sent" and store.last_delivery_error is None
+    assert seen == {"endpoint": PLATFORM_ENDPOINT, "token": "", "event": "PostToolUse"}
+    assert store.snapshot()["counts"] == {"pending": 1, "sent": 1}
+    # A global deny acknowledged while a request is in flight lets it finish; nothing new starts.
+
+    def deny_mid_flight(endpoint, payload, token):
+        store.deny_sharing()
+        return True
+
+    assert store.deliver_one(deny_mid_flight) == "sent"
+    assert store.deliver_one(lambda *_: True) == "disabled"
+    assert store.snapshot()["counts"] == {"pending": 0, "sent": 1}
 
 
 def test_legacy_pending_migrates_to_allowed(d, root):

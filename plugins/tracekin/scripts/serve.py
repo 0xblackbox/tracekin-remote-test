@@ -27,6 +27,8 @@ class App:
         self.store.set_active_project(self.project)
         self.stop = threading.Event()
         self.last_delivery = "idle"
+        self.delivery_error = None
+        self.rejected = 0
         self.received = set()
         self.receive_lock = threading.Lock()
         self.collector = None
@@ -73,7 +75,7 @@ class App:
         data = self.store.snapshot()
         with self.receive_lock:
             received = len(self.received)
-        data.update(default_project=data["config"].get("active_project") or self.project, delivery=self.last_delivery, demo_received=received)
+        data.update(default_project=data["config"].get("active_project") or self.project, delivery=self.last_delivery, delivery_error=self.delivery_error, delivery_rejected=self.rejected, demo_received=received)
         return data
 
     def decide(self, decision):
@@ -88,9 +90,15 @@ class App:
         while not self.stop.wait(delay):
             try:
                 self.last_delivery = self.store.deliver_one(send_https)
-                delay = min(delay * 2, 30) if self.last_delivery == "retry" else 0.5
-            except (OSError, ValueError, sqlite3.Error):
+                self.delivery_error = self.store.last_delivery_error
+                if self.last_delivery == "rejected":
+                    self.rejected += 1
+                # Auth and transport failures back off; a rejected event is dropped
+                # so the next one is attempted right away.
+                delay = min(delay * 2, 30) if self.last_delivery in ("retry", "unauthorized") else 0.5
+            except (OSError, ValueError, sqlite3.Error) as error:
                 self.last_delivery = "retry"
+                self.delivery_error = type(error).__name__
                 delay = min(delay * 2, 30)
 
     def sample(self):

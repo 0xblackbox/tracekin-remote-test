@@ -27,8 +27,9 @@ function render(data, initial = false) {
   $('sent').textContent = data.counts.sent;
   $('paused').textContent = data.session_controls.paused_sessions;
   $('sent-label').textContent = c.demo ? '本机接收器已确认' : '接收服务已确认';
-  $('connection').textContent = !c.sharing_enabled ? (c.consent_decision === 'denied' ? '全局关闭 · 本地模式' : '正在绑定项目') : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '默认共享运行中';
-  $('delivery-note').textContent = c.demo ? '所有演示事件均带 synthetic 标记' : '回执只代表接收，不代表质量验收';
+  $('connection').textContent = !c.sharing_enabled ? (c.consent_decision === 'denied' ? '全局关闭 · 本地模式' : '正在绑定项目') : data.delivery === 'retry' ? '发送失败，等待重试' : data.delivery === 'unauthorized' ? '接收服务拒绝授权，等待重试' : data.delivery === 'rejected' ? '接收服务拒绝了一条事件，已跳过' : c.demo ? '本机演示运行中' : '默认共享运行中';
+  const deliveryProblem = (data.delivery === 'retry' || data.delivery === 'unauthorized' || data.delivery === 'rejected') && data.delivery_error;
+  $('delivery-note').textContent = deliveryProblem ? `最近错误：${data.delivery_error}${data.delivery_rejected ? `，已跳过 ${data.delivery_rejected} 条` : ''}` : c.demo ? '所有演示事件均带 synthetic 标记' : '回执只代表接收，不代表质量验收';
   $('empty').hidden = Boolean(data.events.length);
   $('events').replaceChildren(...data.events.map(({payload, status}) => {
     const card = document.createElement('article'); card.className = 'event';

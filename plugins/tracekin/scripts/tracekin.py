@@ -22,8 +22,11 @@ MAX_INPUT = 262144
 MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
+SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
+# The receiver refused this specific event; retrying it would block the queue.
+PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.4+codex.20260916141330"
+PLUGIN_VERSION = "0.4.5+codex.20260916143511"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
@@ -146,6 +149,7 @@ class Store:
         self.db = self.home / "tracekin.sqlite3"
         self.demo = demo
         self.demo_endpoint = None
+        self.last_delivery_error = None
         if not create:
             # Read paths (hooks, `status`, MCP tracekin_status) never create the
             # directory or the schema and never run migrations.
@@ -518,27 +522,49 @@ class Store:
             return "queued" if changed else "duplicate"
 
     def deliver_one(self, sender):
-        # Hold the write transaction through bounded delivery. After disable is acknowledged,
-        # no old queued event can start transmission. A request already in flight may finish.
+        """Deliver the oldest pending event and report the outcome.
+
+        The write lock is held only while choosing the event and while
+        recording the result, never during the network call, so hooks keep
+        recording while a slow receiver is contacted. Once a disable is
+        acknowledged nothing new starts; a request already in flight may
+        finish. Outcomes: sent, empty, disabled, retry (network/5xx/429),
+        unauthorized (401/403, kept for retry), rejected (the receiver refused
+        this event itself, so it is dropped instead of blocking the queue).
+        """
+        self.last_delivery_error = None
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             cfg = self.read_config(c)
             if not cfg["sharing_enabled"]:
                 return "disabled"
             self.prune(c)
-            row = c.execute("SELECT * FROM events WHERE status='pending' ORDER BY created LIMIT 1").fetchone()
+            row = c.execute("SELECT id, payload FROM events WHERE status='pending' ORDER BY created LIMIT 1").fetchone()
             if not row:
                 return "empty"
             valid_endpoint(cfg["endpoint"], self.demo_endpoint)
-            payload = json.loads(row["payload"])
-            try:
-                acknowledged = sender(cfg["endpoint"], payload, cfg.get("endpoint_token", ""))
-            except (OSError, ValueError, urllib.error.URLError):
-                return "retry"
-            if acknowledged is not True:
-                return "retry"
-            c.execute("UPDATE events SET status='sent' WHERE id=?", (row["id"],))
-            return "sent"
+            event_id, payload = row["id"], json.loads(row["payload"])
+            endpoint, endpoint_token = cfg["endpoint"], cfg.get("endpoint_token", "")
+        try:
+            acknowledged = sender(endpoint, payload, endpoint_token)
+        except urllib.error.HTTPError as error:
+            self.last_delivery_error = describe_http_error(error)
+            if error.code in PERMANENT_REJECTIONS:
+                with self.connect() as c:
+                    c.execute("BEGIN IMMEDIATE")
+                    c.execute("DELETE FROM events WHERE id=? AND status='pending'", (event_id,))
+                return "rejected"
+            return "unauthorized" if error.code in (401, 403) else "retry"
+        except (OSError, ValueError, urllib.error.URLError) as error:
+            self.last_delivery_error = type(error).__name__
+            return "retry"
+        if acknowledged is not True:
+            self.last_delivery_error = "unacknowledged"
+            return "retry"
+        with self.connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("UPDATE events SET status='sent' WHERE id=? AND status='pending'", (event_id,))
+        return "sent"
 
     def clear_local(self):
         # Clearing local receipts never changes the global decision or the
@@ -555,6 +581,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def describe_http_error(error):
+    """Short, log-safe description such as ``HTTP 401 unauthorized``."""
+    detail = ""
+    try:
+        body = json.loads(error.read(512))
+        if isinstance(body, dict) and isinstance(body.get("error"), str):
+            detail = " " + body["error"][:64]
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return f"HTTP {error.code}{detail}"
+
+
 def send_https(endpoint, payload, endpoint_token=""):
     body = json.dumps({"schema": SCHEMA, "events": [payload]}).encode()
     headers = {"Content-Type": "application/json", "Idempotency-Key": payload["id"]}
@@ -562,7 +600,7 @@ def send_https(endpoint, payload, endpoint_token=""):
         headers["Authorization"] = "Bearer " + endpoint_token
     request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(request, timeout=2) as response:
+    with opener.open(request, timeout=SEND_TIMEOUT) as response:
         result = json.loads(response.read(65537))
         return isinstance(result, dict) and isinstance(result.get("accepted"), list) and payload["id"] in result["accepted"]
 
