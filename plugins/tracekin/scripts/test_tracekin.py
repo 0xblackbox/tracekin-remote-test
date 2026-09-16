@@ -16,10 +16,11 @@ import time
 import urllib.error
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, home_dir, session_command
+from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command
 
-EXPECTED_VERSION = "0.4.6+codex.20260916150826"
+EXPECTED_VERSION = "0.5.0+build.20260916153000"
 SCRIPTS = Path(__file__).resolve().parent
+PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
 MCP_SERVER = SCRIPTS / "mcp_server.py"
 FULL_SCHEMA = (
@@ -170,10 +171,19 @@ def stop_companion(home):
 
 # --- tests -------------------------------------------------------------------
 
-def test_version_synced_with_manifest():
+def test_version_synced_with_manifests():
     assert PLUGIN_VERSION == EXPECTED_VERSION
-    manifest = json.loads((SCRIPTS.parent / ".codex-plugin" / "plugin.json").read_text())
-    assert manifest["version"] == PLUGIN_VERSION
+    codex = json.loads((PLUGIN_DIR / ".codex-plugin" / "plugin.json").read_text())
+    claude = json.loads((PLUGIN_DIR / ".claude-plugin" / "plugin.json").read_text())
+    marketplace = json.loads((PLUGIN_DIR.parent.parent / ".claude-plugin" / "marketplace.json").read_text())
+    assert codex["version"] == claude["version"] == PLUGIN_VERSION
+    assert [p["version"] for p in marketplace["plugins"] if p["name"] == "tracekin"] == [PLUGIN_VERSION]
+    # Both harnesses share hooks.json; each gets an MCP config in its own variable dialect.
+    hooks = json.loads((PLUGIN_DIR / "hooks" / "hooks.json").read_text())
+    commands = [h["command"] for group in hooks["hooks"].values() for entry in group for h in entry["hooks"]]
+    assert commands and all("${CLAUDE_PLUGIN_ROOT}" in c for c in commands)
+    assert "${PLUGIN_ROOT}" in json.loads((PLUGIN_DIR / codex["mcpServers"]).read_text())["mcpServers"]["tracekin"]["args"][0]
+    assert "${CLAUDE_PLUGIN_ROOT}" in json.loads((PLUGIN_DIR / claude["mcpServers"]).read_text())["mcpServers"]["tracekin"]["args"][0]
 
 
 def test_hook_and_status_never_create_state(d, root):
@@ -241,31 +251,47 @@ def test_session_start_hook_command(d, root):
         stop_companion(home)
 
 
-def test_hooks_and_mcp_share_one_data_dir(d, root):
-    """Codex injects PLUGIN_DATA into hook commands only, never into the .mcp.json
-    server. The data directory must therefore come from CODEX_HOME on every surface."""
-    codex_home = d / "codex-home"
-    plugin_data = d / "plugins" / "data" / "tracekin-tracekin-remote-test"
-    base_env = {k: v for k, v in os.environ.items() if k not in ("TRACEKIN_HOME", "PLUGIN_DATA", "CLAUDE_PLUGIN_DATA", "CODEX_HOME", "TRACEKIN_PROJECT")}
-    hook_env = dict(base_env, CODEX_HOME=str(codex_home), PLUGIN_DATA=str(plugin_data), CLAUDE_PLUGIN_DATA=str(plugin_data))
-    mcp_env = dict(base_env, CODEX_HOME=str(codex_home))
-    expected = str((codex_home / "tracekin").resolve())
-    saved = {k: os.environ.get(k) for k in ("TRACEKIN_HOME", "PLUGIN_DATA", "CODEX_HOME")}
-    try:
-        os.environ.pop("TRACEKIN_HOME", None)
-        os.environ["PLUGIN_DATA"] = str(plugin_data)
-        os.environ["CODEX_HOME"] = str(codex_home)
-        assert str(home_dir()) == expected, "PLUGIN_DATA must not select the data directory"
-        os.environ.pop("CODEX_HOME")
-        assert home_dir() == (Path.home() / ".codex" / "tracekin").resolve()
-        os.environ["TRACEKIN_HOME"] = str(d / "override")
-        assert home_dir() == (d / "override").resolve()
-    finally:
-        for key, value in saved.items():
+ENV_KEYS = ("TRACEKIN_HOME", "PLUGIN_DATA", "CLAUDE_PLUGIN_DATA", "CODEX_HOME", "TRACEKIN_PROJECT", "HOME")
+
+
+def base_env():
+    return {k: v for k, v in os.environ.items() if k not in ENV_KEYS}
+
+
+class temp_env:
+    """Temporarily replace selected process environment variables."""
+
+    def __init__(self, **values):
+        self.values = values
+
+    def __enter__(self):
+        self.saved = {k: os.environ.get(k) for k in ENV_KEYS}
+        for key in ENV_KEYS:
+            os.environ.pop(key, None)
+        for key, value in self.values.items():
+            os.environ[key] = value
+
+    def __exit__(self, *_):
+        for key, value in self.saved.items():
             if value is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def test_hooks_and_mcp_share_one_data_dir(d, root):
+    """Harnesses inject PLUGIN_DATA / CLAUDE_PLUGIN_DATA into hook commands only,
+    never into the .mcp.json server. Every surface must resolve ~/.tracekin."""
+    fake_home = d / "home"
+    fake_home.mkdir()
+    plugin_data = d / "plugins" / "data" / "tracekin-tracekin-remote-test"
+    hook_env = dict(base_env(), HOME=str(fake_home), CODEX_HOME=str(d / "codex-home"), PLUGIN_DATA=str(plugin_data), CLAUDE_PLUGIN_DATA=str(plugin_data))
+    mcp_env = dict(base_env(), HOME=str(fake_home))
+    expected = str((fake_home / ".tracekin").resolve())
+    with temp_env(HOME=str(fake_home), PLUGIN_DATA=str(plugin_data), CODEX_HOME=str(d / "codex-home")):
+        assert str(home_dir()) == expected, "PLUGIN_DATA / CODEX_HOME must not select the data directory"
+    with temp_env(HOME=str(fake_home), TRACEKIN_HOME=str(d / "override")):
+        assert home_dir() == (d / "override").resolve()
     # A companion left behind by a <= 0.4.3 hook in the PLUGIN_DATA directory.
     legacy_dir = plugin_data / "tracekin"
     legacy_dir.mkdir(parents=True)
@@ -277,7 +303,7 @@ def test_hooks_and_mcp_share_one_data_dir(d, root):
         assert started.returncode == 0, started.stderr
         out = json.loads(started.stdout)
         assert out["tracekin"] == "started" and out["data_dir"] == expected, out
-        assert (codex_home / "tracekin" / "tracekin.sqlite3").exists() and not (legacy_dir / "tracekin.sqlite3").exists()
+        assert (fake_home / ".tracekin" / "tracekin.sqlite3").exists() and not (legacy_dir / "tracekin.sqlite3").exists()
         assert stale.wait(timeout=5) != 0 and not (legacy_dir / "runtime.json").exists(), "legacy companion was not stopped"
         # The MCP server runs without PLUGIN_DATA and must read the same database.
         status = mcp_payload(mcp_calls(None, root, "tracekin_status", env=mcp_env)[2])
@@ -285,12 +311,110 @@ def test_hooks_and_mcp_share_one_data_dir(d, root):
         hooked = run_cli("hook", stdin=json.dumps(tool_event(root)), env=hook_env, cwd=root)
         assert hooked.returncode == 0 and hooked.stdout.strip() == "{}"
         assert mcp_payload(mcp_calls(None, root, "tracekin_status", env=mcp_env)[2])["counts"] == {"pending": 1, "sent": 0}
-        assert cli_status(codex_home / "tracekin")["counts"] == {"pending": 1, "sent": 0}
+        assert cli_status(fake_home / ".tracekin")["counts"] == {"pending": 1, "sent": 0}
     finally:
-        stop_companion(codex_home / "tracekin")
+        stop_companion(fake_home / ".tracekin")
         if stale.poll() is None:
             stale.kill()
             stale.wait()
+
+
+def test_legacy_codex_home_is_adopted_once(d, root):
+    """A 0.4.x database under ~/.codex/tracekin is adopted by the first write path
+    into ~/.tracekin; read paths only report it."""
+    fake_home = d / "home"
+    legacy = fake_home / ".codex" / "tracekin"
+    legacy_store = Store(legacy)
+    legacy_store.set_active_project(root)
+    assert legacy_store.record(tool_event(root)) == "queued"
+    stale = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    (legacy / "runtime.json").write_text(json.dumps({"pid": stale.pid, "url": "http://127.0.0.1:1/#x", "mode": "production", "version": "0.4.6+codex.0"}))
+    env = dict(base_env(), HOME=str(fake_home))
+    new_home = fake_home / ".tracekin"
+    try:
+        # Pure-read status before any SessionStart: nothing is created or moved.
+        before = json.loads(run_cli("status", env=env).stdout)
+        assert before["initialized"] is False and before["legacy_data_dir"] == str(legacy) and before["data_dir"] == str(new_home)
+        assert not new_home.exists() and (legacy / "tracekin.sqlite3").exists()
+        started = json.loads(run_cli("start", stdin=json.dumps({"cwd": str(root)}), env=env, cwd=root).stdout)
+        assert started["tracekin"] == "started" and started["data_dir"] == str(new_home)
+        after = json.loads(run_cli("status", env=env).stdout)
+        assert after["initialized"] is True and after["legacy_data_dir"] is None
+        assert after["counts"] == {"pending": 1, "sent": 0}, "queued events must survive the move"
+        assert after["current_project_authorized"] is True and after["config"]["projects"] == [str(root)]
+        assert (legacy / "tracekin.sqlite3.migrated").exists() and not (legacy / "tracekin.sqlite3").exists()
+        assert stale.wait(timeout=5) != 0 and not (legacy / "runtime.json").exists(), "legacy companion was not stopped"
+        wait_for_runtime(new_home)
+        again = json.loads(run_cli("start", stdin=json.dumps({"cwd": str(root)}), env=env, cwd=root).stdout)
+        assert again["tracekin"] == "already_running"
+        assert json.loads(run_cli("status", env=env).stdout)["counts"] == {"pending": 1, "sent": 0}
+    finally:
+        stop_companion(new_home)
+        if stale.poll() is None:
+            stale.kill()
+            stale.wait()
+    # An explicit TRACEKIN_HOME never triggers adoption.
+    isolated = d / "isolated"
+    assert Store(isolated).snapshot()["counts"] == {"pending": 0, "sent": 0}
+
+
+def claude_event(root, kind, **fields):
+    event = {"session_id": "claude-session", "prompt_id": "prompt-1", "transcript_path": "/private/claude/transcript.jsonl", "cwd": str(root), "permission_mode": "default", "hook_event_name": kind}
+    if kind == "UserPromptSubmit":
+        event["prompt"] = "PRIVATE_PROMPT"
+    elif kind == "PostToolUse":
+        event.update(tool_name="Bash", tool_input={"command": "PRIVATE_COMMAND"}, tool_use_id="toolu_01", tool_output="PRIVATE_OUTPUT", tool_output_is_error=False)
+    elif kind == "Stop":
+        event["stop_hook_active"] = False
+    event.update(fields)
+    return event
+
+
+def test_claude_code_hook_payloads_are_normalized(d, root):
+    assert detect_harness({"prompt_id": "p"}) == "claude-code" and detect_harness({"turn_id": "t"}) == "codex" and detect_harness({}) == "codex"
+    harness, normalized = normalize_hook_event(claude_event(root, "PostToolUse"))
+    assert harness == "claude-code" and normalized["turn_id"] == "prompt-1" and normalized["tool_response"] == "PRIVATE_OUTPUT"
+    assert normalize_hook_event(claude_event(root, "Stop", prompt_id=None))[1]["turn_id"].startswith("t-")
+    assert normalize_hook_event({"turn_id": "codex-turn", "hook_event_name": "Stop"})[0] == "codex"
+    claude_env = dict(base_env(), TRACEKIN_HOME=str(d / "claude"), CLAUDE_PLUGIN_ROOT=str(PLUGIN_DIR), CLAUDE_PLUGIN_DATA=str(d / "claude-data"), CLAUDE_SESSION_ID="claude-session", CLAUDE_PROJECT_DIR=str(root))
+    home = d / "claude"
+    try:
+        # SessionStart carries the Claude Code shape and binds the project.
+        started = run_cli("start", stdin=json.dumps({"session_id": "claude-session", "cwd": str(root), "hook_event_name": "SessionStart", "source": "startup", "transcript_path": "/private/claude/transcript.jsonl"}), env=claude_env, cwd=root)
+        assert json.loads(started.stdout)["tracekin"] == "started", started.stdout
+        store = Store(home, create=False)
+        assert store.snapshot()["current_project_authorized"] is True
+        for kind in ("UserPromptSubmit", "PostToolUse", "Stop"):
+            hooked = run_cli("hook", stdin=json.dumps(claude_event(root, kind)), env=claude_env, cwd=root)
+            assert hooked.returncode == 0 and hooked.stdout.strip() == "{}", hooked.stderr
+        events = {e["payload"]["event"]: e["payload"] for e in store.snapshot()["events"]}
+        assert set(events) == {"UserPromptSubmit", "PostToolUse", "Stop"} and store.snapshot()["counts"] == {"pending": 3, "sent": 0}
+        assert all(p["source"] == "claude_code_hook" and p["privacy_mode"] == "full_task" for p in events.values())
+        assert events["UserPromptSubmit"]["task_data"] == {"prompt": "PRIVATE_PROMPT"}
+        assert events["PostToolUse"]["task_data"] == {"tool_input": {"command": "PRIVATE_COMMAND"}, "tool_response": "PRIVATE_OUTPUT"} and events["PostToolUse"]["tool_category"] == "shell"
+        assert events["Stop"]["task_data"] == {}, "Claude Code Stop carries no message and the transcript is never read"
+        assert len({p["turn_id"] for p in events.values()}) == 1, "prompt_id is the shared turn identifier"
+        raw = store.db.read_bytes()
+        assert b"claude-session" not in raw and b"/private/claude/transcript.jsonl" not in raw and b"prompt-1" not in raw
+        # Same prompt_id + tool_use_id is a duplicate; a new prompt is a new turn.
+        assert store.record(claude_event(root, "PostToolUse")) == "duplicate"
+        assert store.record(claude_event(root, "UserPromptSubmit", prompt_id="prompt-2", prompt="second")) == "queued"
+        assert store.record(claude_event(root, "PostToolUse", prompt_id="prompt-2", tool_name="Read", tool_use_id="toolu_02", tool_input={"file_path": "/x"}, tool_output="contents")) == "queued"
+        assert store.record(claude_event(root, "PostToolUse", prompt_id="prompt-2", tool_name="WebFetch", tool_use_id="toolu_03", tool_output="page")) == "queued"
+        categories = {e["payload"].get("tool_category") for e in store.snapshot()["events"] if e["payload"]["event"] == "PostToolUse"}
+        assert categories == {"shell", "read", "web"}
+        # Session controls work from a Claude Code prompt, backticks included.
+        hooked = run_cli("hook", stdin=json.dumps(claude_event(root, "UserPromptSubmit", prompt_id="prompt-3", prompt="`tracekin off`")), env=claude_env, cwd=root)
+        assert hooked.stdout.strip() == "{}"
+        assert store.snapshot()["session_controls"]["paused_sessions"] == 1 and store.snapshot()["counts"] == {"pending": 0, "sent": 0}
+        assert store.record(claude_event(root, "PostToolUse", prompt_id="prompt-3", tool_use_id="toolu_04")) == "session_disabled"
+        assert store.record(claude_event(root, "UserPromptSubmit", prompt_id="prompt-4", prompt="tracekin on")) == "session_enabled"
+        # Forcing the Codex dialect on a Claude Code payload fails closed (no turn_id).
+        assert store.record(claude_event(root, "PostToolUse", prompt_id="prompt-5", tool_use_id="toolu_05"), harness="codex") == "invalid"
+        forced = run_cli("hook", "--harness", "codex", stdin=json.dumps(claude_event(root, "PostToolUse", prompt_id="prompt-6", tool_use_id="toolu_06")), env=claude_env, cwd=root)
+        assert forced.returncode == 0 and forced.stdout.strip() == "{}" and store.snapshot()["counts"] == {"pending": 0, "sent": 0}
+    finally:
+        stop_companion(home)
 
 
 def test_tracekin_off_and_on_control_only_current_session(d, root):

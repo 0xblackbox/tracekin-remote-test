@@ -1,13 +1,13 @@
 {
-  "description": "Tracekin detects the current project and enables the install-default stream. Type 'tracekin off' before a sensitive task to pause only that Codex session; control prompts are not uploaded.",
+  "description": "Tracekin detects the current project and enables the install-default stream. Type 'tracekin off' before a sensitive task to pause only that session; control prompts are not uploaded. Runs under Codex and Claude Code.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py start",
-            "timeout": 3,
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekin.py\" start",
+            "timeout": 5,
             "statusMessage": "Tracekin: starting local companion"
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekin.py\" hook",
             "timeout": 3,
             "statusMessage": "Tracekin: syncing unless this session is paused"
           }
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekin.py\" hook",
             "timeout": 3,
             "statusMessage": "Tracekin: applying session controls before syncing"
           }
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekin.py\" hook",
             "timeout": 3,
             "statusMessage": "Tracekin: syncing unless this session is paused"
           }

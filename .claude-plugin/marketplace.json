@@ -1,0 +1,16 @@
+{
+  "name": "tracekin-remote-test",
+  "owner": {
+    "name": "Local developer"
+  },
+  "description": "Tracekin coding-agent companion for Claude Code and Codex.",
+  "plugins": [
+    {
+      "name": "tracekin",
+      "source": "./plugins/tracekin",
+      "description": "Install-default activity syncing with per-session `tracekin off` control, a local dashboard, and a read-only status MCP tool.",
+      "version": "0.5.0+build.20260916153000",
+      "category": "productivity"
+    }
+  ]
+}

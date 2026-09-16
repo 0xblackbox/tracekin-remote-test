@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Tracekin local companion. Standard-library only; install enables sync."""
+"""Tracekin local companion. Standard-library only; install enables sync.
+
+Works as a Codex plugin and as a Claude Code plugin: both harnesses run the
+same hook script, which normalizes their slightly different hook payloads
+into one event shape before recording.
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -27,7 +33,17 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.4.6+codex.20260916150826"
+PLUGIN_VERSION = "0.5.0+build.20260916153000"
+HARNESSES = ("codex", "claude-code")
+HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
+# Coarse tool categories; never the tool name, command, or arguments.
+TOOL_CATEGORIES = {
+    "Bash": "shell", "exec_command": "shell", "shell": "shell",
+    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit",
+    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read",
+    "WebFetch": "web", "WebSearch": "web",
+    "Task": "agent", "Agent": "agent",
+}
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
@@ -86,20 +102,69 @@ STATE_HINTS = {
 }
 
 
+def default_home_dir():
+    """Harness-neutral data directory shared by every surface on this machine."""
+    return (Path.home() / ".tracekin").resolve()
+
+
 def home_dir():
     """Shared local data directory for hooks, the panel, and the MCP server.
 
-    Codex injects ``PLUGIN_DATA`` into hook commands only, never into a
-    plugin's ``.mcp.json`` server, so it must not select the directory:
-    every surface resolves the same ``$CODEX_HOME/tracekin`` (default
-    ``~/.codex/tracekin``). ``TRACEKIN_HOME`` remains an explicit override.
+    One directory per machine, whichever harness (Codex, Claude Code) is
+    running: one consent record, one queue, one companion. Harness-provided
+    variables such as ``PLUGIN_DATA`` / ``CLAUDE_PLUGIN_DATA`` are injected
+    into hook commands only, never into a plugin's MCP server, so they must
+    not select the directory. ``TRACEKIN_HOME`` remains an explicit override.
     """
     override = os.environ.get("TRACEKIN_HOME")
     if override:
         return Path(override).expanduser().resolve()
+    return default_home_dir()
+
+
+def legacy_home_dirs():
+    """Data directories used by versions <= 0.4.x, oldest last."""
     codex_home = os.environ.get("CODEX_HOME")
     base = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
-    return (base / "tracekin").resolve()
+    candidates = [(base / "tracekin").resolve()]
+    for variable in ("PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
+        value = os.environ.get(variable)
+        if value:
+            candidates.append((Path(value).expanduser() / "tracekin").resolve())
+    return list(dict.fromkeys(candidates))
+
+
+def legacy_database(home):
+    """The first legacy database worth adopting for ``home``, if any."""
+    home = Path(home).resolve()
+    for legacy in legacy_home_dirs():
+        db = legacy / "tracekin.sqlite3"
+        if legacy != home and db.is_file():
+            return db
+    return None
+
+
+def migrate_legacy_home(home):
+    """Adopt a 0.4.x database into the shared directory, once.
+
+    Runs only on write paths (SessionStart, allow/deny), only when ``home``
+    is the default shared directory, and only while it has no database yet.
+    The old companion is stopped and the old file is renamed so an older
+    plugin build that still runs cannot keep writing to a diverged copy.
+    Returns the adopted source path or None.
+    """
+    home = Path(home).resolve()
+    if os.environ.get("TRACEKIN_HOME") or home != default_home_dir() or (home / "tracekin.sqlite3").exists():
+        return None
+    source = legacy_database(home)
+    if source is None:
+        return None
+    stop_recorded_companion(source.with_name("runtime.json"))
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    shutil.copy2(source, home / "tracekin.sqlite3")
+    (home / "tracekin.sqlite3").chmod(0o600)
+    source.rename(source.with_name("tracekin.sqlite3.migrated"))
+    return source
 
 
 class InputError(ValueError):
@@ -185,6 +250,7 @@ class Store:
             # Read paths (hooks, `status`, MCP tracekin_status) never create the
             # directory or the schema and never run migrations.
             return
+        migrate_legacy_home(self.home)
         self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
@@ -313,9 +379,11 @@ class Store:
             state = "enabled"
         else:
             state = "binding_project"
+        legacy = legacy_database(self.home) if not initialized else None
         return {
             "config": cfg,
             "data_dir": str(self.home),
+            "legacy_data_dir": str(legacy.parent) if legacy else None,
             "counts": {"pending": counts.get("pending", 0), "sent": counts.get("sent", 0)},
             "events": events,
             "current_project_authorized": authorized,
@@ -490,14 +558,15 @@ class Store:
         row = c.execute("SELECT enabled FROM session_overrides WHERE session_id=?", (session_hash,)).fetchone()
         return "session_disabled" if row and row[0] == 0 else "session_enabled"
 
-    def record(self, event):
+    def record(self, event, harness="auto"):
         if not isinstance(event, dict):
             return "invalid"
+        harness, event = normalize_hook_event(event, harness)
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             cfg = self.read_config(c)
             kind = event.get("hook_event_name")
-            if kind not in {"PostToolUse", "Stop", "UserPromptSubmit"}:
+            if kind not in HOOK_EVENTS:
                 return "unsupported"
             if not isinstance(event.get("session_id"), str) or not event["session_id"] or len(event["session_id"]) > 4096:
                 return "invalid"
@@ -532,7 +601,7 @@ class Store:
                 "session_id": session_hash,
                 "turn_id": self.digest(cfg, "turn", event["turn_id"]),
                 "event": kind, "observed_at": int(time.time()),
-                "source": "codex_hook", "synthetic": cfg["demo"], "privacy_mode": "full_task" if cfg.get("share_all") else "activity_only",
+                "source": harness.replace("-", "_") + "_hook", "synthetic": cfg["demo"], "privacy_mode": "full_task" if cfg.get("share_all") else "activity_only",
             }
             if cfg.get("share_all"):
                 # Full mode is deliberately explicit: these are the fields the hook can see.
@@ -543,9 +612,9 @@ class Store:
                         task_data[field] = event[field]
                 payload["task_data"] = task_data
             if kind == "PostToolUse":
-                # Never serialize tool names, commands, outputs, prompts, or transcript paths.
+                # Only the coarse category leaves the machine, never the tool name itself.
                 name = event.get("tool_name")
-                payload["tool_category"] = {"Bash": "shell", "exec_command": "shell", "apply_patch": "edit", "Read": "read", "Write": "edit", "Edit": "edit"}.get(name, "other") if isinstance(name, str) else "other"
+                payload["tool_category"] = TOOL_CATEGORIES.get(name, "other") if isinstance(name, str) else "other"
             self.prune(c)
             if c.execute("SELECT count(*) FROM events").fetchone()[0] >= MAX_EVENTS:
                 return "full"
@@ -636,7 +705,42 @@ def send_https(endpoint, payload, endpoint_token=""):
         return isinstance(result, dict) and isinstance(result.get("accepted"), list) and payload["id"] in result["accepted"]
 
 
-def run_hook(home):
+def detect_harness(event):
+    """Tell a Claude Code hook payload from a Codex one by its identifiers."""
+    if "prompt_id" in event or "tool_output" in event or "tool_output_is_error" in event:
+        return "claude-code"
+    return "codex"
+
+
+def normalize_hook_event(event, harness="auto"):
+    """Map a harness-specific hook payload onto the Codex-shaped event that
+    ``Store.record`` understands. Returns ``(harness, event)``.
+
+    Claude Code differences: the per-turn identifier is ``prompt_id`` (not
+    ``turn_id``), PostToolUse carries ``tool_output`` (not ``tool_response``),
+    and Stop carries no assistant message. The transcript file is never read
+    to fill the gap.
+    """
+    if harness == "auto":
+        harness = detect_harness(event)
+    if harness == "codex":
+        return harness, event
+    if harness != "claude-code":
+        raise InputError("未知的 harness")
+    normalized = dict(event)
+    if not normalized.get("turn_id"):
+        turn = normalized.get("prompt_id")
+        if not isinstance(turn, str) or not turn:
+            # Older builds without prompt_id: keep prompts distinct rather than
+            # collapsing a whole session into one duplicate-suppressed turn.
+            turn = "t-" + str(normalized.get("tool_use_id") or int(time.time() * 1000))
+        normalized["turn_id"] = turn
+    if "tool_response" not in normalized and "tool_output" in normalized:
+        normalized["tool_response"] = normalized["tool_output"]
+    return harness, normalized
+
+
+def run_hook(home, harness="auto"):
     store = Store(home, create=False)
     # The off path intentionally does not read stdin or inspect session log files.
     if not store.enabled():
@@ -644,7 +748,7 @@ def run_hook(home):
     raw = sys.stdin.buffer.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
         return
-    store.record(json.loads(raw))
+    store.record(json.loads(raw), harness)
 
 
 def bind_session_project(home, project=None):
@@ -681,19 +785,15 @@ def stop_recorded_companion(runtime):
 
 
 def stop_legacy_companions(home):
-    """Versions <= 0.4.3 let hooks run the companion from $PLUGIN_DATA/tracekin.
-
-    That directory is never read by the MCP server, so a companion still
-    serving it would keep delivering from a stale database. Stop it so the
-    shared directory has exactly one companion.
+    """Stop companions that older builds started from their own directories
+    (``$PLUGIN_DATA/tracekin`` in 0.4.3, ``~/.codex/tracekin`` before 0.5.0)
+    so the shared directory has exactly one companion.
     """
-    for variable in ("PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
-        value = os.environ.get(variable)
-        if not value:
-            continue
-        legacy = Path(value).expanduser() / "tracekin" / "runtime.json"
-        if legacy.exists() and legacy.resolve() != (Path(home) / "runtime.json").resolve():
-            stop_recorded_companion(legacy)
+    current = (Path(home) / "runtime.json").resolve()
+    for legacy in legacy_home_dirs():
+        runtime = legacy / "runtime.json"
+        if runtime.exists() and runtime.resolve() != current:
+            stop_recorded_companion(runtime)
 
 
 def start_companion(home, project=None):
@@ -718,7 +818,7 @@ def start_companion(home, project=None):
             runtime.unlink(missing_ok=True)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             runtime.unlink(missing_ok=True)
-    root = Path(os.environ.get("PLUGIN_ROOT", Path(__file__).resolve().parents[1]))
+    root = Path(os.environ.get("PLUGIN_ROOT") or os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parents[1])
     Path(home).mkdir(mode=0o700, parents=True, exist_ok=True)
     with open(os.devnull, "w") as sink:
         command = [sys.executable, str(root / "scripts" / "serve.py"), "--home", str(home)]
@@ -747,6 +847,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=["hook", "status", "start"])
     parser.add_argument("--home", type=Path, default=home_dir())
+    parser.add_argument("--harness", choices=("auto",) + HARNESSES, default="auto", help="hook payload dialect; auto-detected from the payload by default")
     args = parser.parse_args()
     if args.action == "start":
         data_dir = str(Path(args.home).expanduser().resolve())
@@ -758,9 +859,9 @@ def main():
             print(json.dumps({"tracekin": "not_started", "data_dir": data_dir, "error": str(error)[:200]}, ensure_ascii=False))
     elif args.action == "hook":
         try:
-            run_hook(args.home)
+            run_hook(args.home, args.harness)
         except (OSError, ValueError, TypeError, sqlite3.Error):
-            pass  # A companion must not block the user's Codex task.
+            pass  # A companion must not block the user's task.
         print("{}")
     else:
         # Pure read: no directory, schema, migration, or prune writes.

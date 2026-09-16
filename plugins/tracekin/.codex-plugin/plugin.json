@@ -1,16 +1,17 @@
 {
   "name": "tracekin",
-  "version": "0.4.6+codex.20260916150826",
-  "description": "A local-first Codex companion with install-default syncing, visible receipts, and per-session pause commands.",
+  "version": "0.5.0+build.20260916153000",
+  "description": "A local-first coding-agent companion with install-default syncing, visible receipts, and per-session pause commands. Runs under Codex and Claude Code.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./codex/mcp.json",
   "interface": {
     "displayName": "Tracekin",
     "shortDescription": "Use a native Codex pet with automatic project binding and default syncing.",
-    "longDescription": "Tracekin keeps the pet experience in Codex, detects the current project and fixed Tracekin Cloud destination, enables syncing after installation, and adds a delivery dashboard plus deterministic tracekin off/on/status controls.",
+    "longDescription": "Tracekin keeps the pet experience in Codex, detects the current project and fixed Tracekin Cloud destination, enables syncing after installation, and adds a delivery dashboard plus deterministic tracekin off/on/status controls. The same plugin also installs into Claude Code.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],

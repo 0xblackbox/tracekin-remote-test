@@ -42,6 +42,8 @@ codex plugin add tracekin@tracekin-remote-test
 codex plugin list --json
 ```
 
+Version `0.5.0` runs under **Claude Code** as well as Codex. One plugin directory carries both manifests (`.codex-plugin/plugin.json` and `.claude-plugin/plugin.json`), one shared `hooks/hooks.json` (commands use `${CLAUDE_PLUGIN_ROOT}`, which Codex also exports), and one MCP config per harness (`codex/mcp.json`, `.mcp.json`). The hook script normalizes Claude Code payloads (`prompt_id` → turn id, `tool_output` → tool response, Stop without an assistant message) and labels events `source: claude_code_hook`. The data directory is now harness-neutral: `~/.tracekin` on every surface, adopted automatically from `~/.codex/tracekin` by the first `SessionStart` after the upgrade (the old file is renamed `tracekin.sqlite3.migrated` and the old companion is stopped). Version strings use `+build.<stamp>` from now on.
+
 Version `0.4.6` makes the session controls tolerant of client formatting. `tracekin off` / `on` / `status` are recognized when the client wraps them in backticks or quotes, adds bold markers or trailing punctuation, changes case, or when the command is the first line of a longer prompt. Previously a prompt such as `` `tracekin` off `` was treated as ordinary text and uploaded.
 
 Version `0.4.5` hardens delivery. The receiver rejecting one event (HTTP 400/413/415/422) no longer blocks every event behind it: that event is dropped and the dashboard shows how many were skipped. HTTP 401/403 is reported as `接收服务拒绝授权` and keeps retrying with backoff, the send timeout is 10 s to survive Cloud Run cold starts, and the database write lock is no longer held during the network call, so hooks keep recording while a slow receiver is contacted. The panel shows the last delivery error next to the connection state.
@@ -61,11 +63,24 @@ Version `0.4.3` makes the install default the single source of truth: a fresh da
 | `tracekin off` / `tracekin on` | 只写 `session_overrides` 表，不改全局 `consent_granted`；其他会话继续默认共享 |
 | `tracekin status` / MCP `tracekin_status` | 纯读：不建表、不迁移、不 prune；数据库只读或缺少 `session_overrides` 表时仍返回 `counts=0`、`paused_sessions=0` |
 
-数据目录：hooks、本地面板和 MCP 服务统一使用 `$CODEX_HOME/tracekin`（默认 `~/.codex/tracekin`），`TRACEKIN_HOME` 仅用于测试和手动排查的显式覆盖；`PLUGIN_DATA` 不再参与目录选择。状态响应中的 `data_dir` 就是实际读取的目录。
+数据目录：hooks、本地面板和 MCP 服务在 Codex 与 Claude Code 下统一使用 `~/.tracekin`，一台机器一份授权、一个队列、一个面板；`TRACEKIN_HOME` 仅用于测试和手动排查的显式覆盖，`PLUGIN_DATA` / `CLAUDE_PLUGIN_DATA` / `CODEX_HOME` 都不参与目录选择。旧的 `~/.codex/tracekin` 会在升级后第一次 `SessionStart` 时被整体采用（含待发送队列）。状态响应中的 `data_dir` 是实际读取的目录，`legacy_data_dir` 非空表示还有旧目录等待采用。
 
 状态响应中的 `sharing_state` 取值：`awaiting_session_start`（尚无数据库）、`binding_project`（已开启但未绑定当前项目）、`enabled`（当前项目已授权）、`denied`（显式全局拒绝）；`migration_pending=true` 表示数据库仍是旧版本状态，下一次 `SessionStart` 会迁移；`hint` 给出对应的下一步操作。
 
 It does **not** claim that activity metadata is a useful training corpus, that a task is high quality, or that a token is owed. A later data product needs a separately consented human-reviewed sample lane and a published reward formula.
+
+## Install into Claude Code
+
+The same checkout is a Claude Code marketplace (`.claude-plugin/marketplace.json`):
+
+```bash
+claude plugin marketplace add 0xblackbox/tracekin-remote-test
+claude plugin install tracekin@tracekin-remote-test
+```
+
+For a local checkout use `claude plugin marketplace add /path/to/tracekin-remote-test`, or load it for one session without installing: `claude --plugin-dir /path/to/tracekin-remote-test/plugins/tracekin`. Validate before publishing with `claude plugin validate plugins/tracekin` and `claude plugin validate .`.
+
+Differences from Codex: Claude Code's `Stop` hook carries no assistant message, so `task_data` is empty for stop events (the transcript file is never read); the per-turn id comes from `prompt_id`; tool categories cover Claude Code's built-in tools (`Read`/`Glob`/`Grep` → `read`, `Edit`/`Write`/`MultiEdit`/`NotebookEdit` → `edit`, `WebFetch`/`WebSearch` → `web`, `Task`/`Agent` → `agent`). Plugin hooks do not fire in `claude -p` print mode. The status tool appears as `mcp__plugin_tracekin_tracekin__tracekin_status`.
 
 ## 跨电脑完整 Hooks/MCP 测试
 
@@ -147,5 +162,5 @@ Tracekin remote smoke test: hooks
 - `tracekin_status` 显示 `sharing_enabled=false`：先用 `codex plugin list --json` 确认 Codex 实际加载的 Tracekin 版本。插件缓存里的旧版本（例如 `0.1.0`）会继续沿用旧默认值和旧的 MCP 状态路径，必须按上文 remove/add 重装并重启 Codex；升级后从项目目录新建会话，`SessionStart` 会把旧数据库迁移为默认开启。若 `sharing_state` 为 `denied`，说明曾显式调用过 `tracekin_deny`，请调用 `tracekin_allow`；
 - hooks 已信任、已重启，新会话仍是 `binding_project` 且提示数据迁移待执行：这是 `0.4.3` 及更早版本的 hook 与 MCP 读写不同目录导致的，升级到 `0.4.4`。可以用 `ls ~/.codex/plugins/data/tracekin-*/tracekin/` 验证旧版 hook 写到了插件数据目录；升级后对比 `tracekin_status` 里的 `data_dir` 与 SessionStart 输出的 `data_dir` 应一致；
 - `tracekin off` 被当成普通提示词上传：`0.4.5` 及更早版本要求逐字匹配，客户端加上反引号、引号或标点就不再识别；`0.4.6` 起会先去掉这些装饰并只看第一行，请升级；
-- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.4.6`。面板的"最近错误"会给出原因：`HTTP 401 unauthorized` 表示接收服务要求 Bearer token，而正式版插件不发送 token，需要在 Cloud Run 上移除 `TRACEKIN_TOKEN`；`HTTP 413` 等表示单条事件被拒绝并已跳过；`URLError`/`TimeoutError` 表示网络不通；
+- 接收失败：确认使用正式面板而不是 demo，并检查当前版本是否为 `0.5.0`。面板的"最近错误"会给出原因：`HTTP 401 unauthorized` 表示接收服务要求 Bearer token，而正式版插件不发送 token，需要在 Cloud Run 上移除 `TRACEKIN_TOKEN`；`HTTP 413` 等表示单条事件被拒绝并已跳过；`URLError`/`TimeoutError` 表示网络不通；
 - 本机面板没有远程电脑数据：这是预期行为；本地面板只显示当前电脑的本地发送队列和回执。
