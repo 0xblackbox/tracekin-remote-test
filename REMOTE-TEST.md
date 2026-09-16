@@ -56,4 +56,4 @@ python3 <插件目录>/scripts/tracekin.py status
 
 ## 7. 排错
 
-见 [plugins/tracekin/README.md 的排错表](plugins/tracekin/README.md#排错)。需要看 hook 实际送了哪些字段时：`touch ~/.tracekin/debug-hooks`，再看 `~/.tracekin/hook-debug.log`，只记字段名不记内容。
+见 [plugins/tracekin/README.zh-CN.md 的排错表](plugins/tracekin/README.zh-CN.md#排错)。需要看 hook 实际送了哪些字段时：`touch ~/.tracekin/debug-hooks`，再看 `~/.tracekin/hook-debug.log`，只记字段名不记内容。

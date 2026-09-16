@@ -111,7 +111,7 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 | `tracekin off` was uploaded | 0.4.5 and earlier required an exact match; upgrade |
 | Dashboard does not open | `runtime.json` is stale; a new session restarts the companion |
 
-Deeper diagnostics and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`) are described in [plugins/tracekin/README.md](plugins/tracekin/README.md) (Chinese).
+Deeper diagnostics and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`) are described in [plugins/tracekin/README.md](plugins/tracekin/README.md).
 
 ## Repository layout
 
@@ -161,9 +161,9 @@ Before publishing, validate the manifests with `claude plugin validate --strict 
 
 ## Documentation
 
-- [plugins/tracekin/README.md](plugins/tracekin/README.md): technical reference in Chinese (runtime details, default policy, delivery, per-harness differences, troubleshooting)
+- [plugins/tracekin/README.md](plugins/tracekin/README.md): technical reference (runtime details, default policy, delivery, per-harness differences, troubleshooting); [中文版](plugins/tracekin/README.zh-CN.md)
+- [CHANGELOG.md](CHANGELOG.md): release history; [中文版](CHANGELOG.zh-CN.md)
 - [REMOTE-TEST.md](REMOTE-TEST.md): cross-machine acceptance walkthrough (Chinese)
-- [CHANGELOG.md](CHANGELOG.md): release history (Chinese)
 - [README.zh-CN.md](README.zh-CN.md): this page in Chinese
 
 ## License

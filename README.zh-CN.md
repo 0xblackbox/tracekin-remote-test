@@ -111,7 +111,7 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 | `tracekin off` 被上传 | 0.4.5 及更早要求逐字匹配，升级 |
 | 面板打不开 | `runtime.json` 过期，新建会话即可重新拉起 companion |
 
-更细的排查与 hook 字段日志（`touch ~/.tracekin/debug-hooks`）见 [plugins/tracekin/README.md](plugins/tracekin/README.md)。
+更细的排查与 hook 字段日志（`touch ~/.tracekin/debug-hooks`）见 [plugins/tracekin/README.zh-CN.md](plugins/tracekin/README.zh-CN.md)。
 
 ## 仓库结构
 
@@ -161,9 +161,9 @@ python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --pro
 
 ## 文档
 
-- [plugins/tracekin/README.md](plugins/tracekin/README.md)：技术参考（运行细节、默认策略、投递、各 harness 差异、排错）
+- [plugins/tracekin/README.zh-CN.md](plugins/tracekin/README.zh-CN.md)：技术参考（运行细节、默认策略、投递、各 harness 差异、排错）；[English](plugins/tracekin/README.md)
 - [REMOTE-TEST.md](REMOTE-TEST.md)：跨电脑完整验收流程
-- [CHANGELOG.md](CHANGELOG.md)：版本记录
+- [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)：版本记录；[English](CHANGELOG.md)
 
 ## License
 
