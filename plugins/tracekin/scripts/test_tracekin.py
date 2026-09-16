@@ -12,7 +12,7 @@ from tracekin import PLATFORM_ENDPOINT, PLUGIN_VERSION, Store
 
 
 def main():
-    assert PLUGIN_VERSION == "0.3.0+codex.20260915222800"
+    assert PLUGIN_VERSION == "0.4.0+codex.20260916121920"
     with tempfile.TemporaryDirectory(prefix="tracekin-test-") as d:
         root = Path(d) / "project"; root.mkdir()
         absent = Path(d) / "absent"
@@ -25,27 +25,26 @@ def main():
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg),))
         assert Store(Path(d) / "legacy", demo=False).snapshot()["config"]["use_existing_pet"] is True
         legacy_state = Store(Path(d) / "legacy", demo=False).snapshot()
-        assert legacy_state["config"]["consent_granted"] is False
+        assert legacy_state["config"]["consent_granted"] is True
         assert legacy_state["config"]["endpoint"] == PLATFORM_ENDPOINT
-        assert legacy_state["config"]["consent_decision"] == "pending"
+        assert legacy_state["config"]["consent_decision"] == "allowed"
         store = Store(Path(d) / "db", demo=False)
         assert store.snapshot()["config"]["use_existing_pet"] is True
+        assert store.snapshot()["config"]["consent_decision"] == "allowed"
+        assert store.snapshot()["config"]["sharing_enabled"] is True
         assert store.configure({"use_existing_pet": False})["config"]["use_existing_pet"] is False
         assert store.configure({"use_existing_pet": True})["config"]["use_existing_pet"] is True
-        store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT})
-        assert store.enabled() is False
+        configured = store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT})
+        assert configured["config"]["sharing_enabled"] is True and configured["current_project_authorized"] is False
+        store.set_active_project(root)
+        assert store.enabled() is True and store.snapshot()["current_project_authorized"] is True
         disabled_status = {"hook_event_name": "UserPromptSubmit", "session_id": "disabled-session", "turn_id": "status", "cwd": str(root), "prompt": "tracekin status"}
-        assert store.record(disabled_status) == "global_disabled"
-        try:
-            store.configure({"sharing_enabled": True})
-            raise AssertionError("sharing enabled without consent")
-        except ValueError:
-            pass
-        assert store.configure({"consent_granted": True, "sharing_enabled": True})["config"]["sharing_enabled"] is True
+        assert store.record(disabled_status) == "session_enabled"
+        assert store.configure({"sharing_enabled": True})["config"]["sharing_enabled"] is True
         event = {"hook_event_name": "PostToolUse", "session_id": "session-secret", "turn_id": "turn-secret", "tool_use_id": "call-secret", "cwd": str(root), "tool_name": "Bash", "tool_input": {"command": "PRIVATE_COMMAND"}, "tool_response": "PRIVATE_OUTPUT", "transcript_path": "/private/transcript"}
         assert store.record(event) == "queued"
         raw = (store.db).read_bytes()
-        assert b"PRIVATE_COMMAND" not in raw and b"PRIVATE_OUTPUT" not in raw and b"session-secret" not in raw
+        assert b"PRIVATE_COMMAND" in raw and b"PRIVATE_OUTPUT" in raw and b"session-secret" not in raw
         assert store.record(event) == "duplicate"
         off_command = {"hook_event_name": "UserPromptSubmit", "session_id": "session-secret", "turn_id": "control-off", "cwd": str(root), "prompt": "tracekin off"}
         hook_off = subprocess.run([sys.executable, str(Path(__file__).with_name("tracekin.py")), "hook", "--home", str(store.home)], input=json.dumps(off_command), text=True, capture_output=True)
@@ -59,6 +58,7 @@ def main():
         assert store.record(dict(event, turn_id="resumed-turn", tool_use_id="resumed-call")) == "queued"
         assert store.snapshot()["session_controls"]["paused_sessions"] == 0
         store.clear_local()
+        assert store.snapshot()["config"]["sharing_enabled"] is True
         allowed = store.allow_active_project(root)
         assert allowed["config"]["projects"] == [str(root.resolve())]
         assert allowed["config"]["endpoint"] == PLATFORM_ENDPOINT
@@ -80,8 +80,8 @@ def main():
         assert mcp_lines[2]["result"]["structuredContent"]["config"]["projects"] == [str(root.resolve())]
         assert mcp_lines[3]["result"]["structuredContent"]["current_project_authorized"] is True
         assert store.snapshot()["counts"] == {"pending": 0, "sent": 0} and not store.enabled() and not store.snapshot()["config"]["consent_granted"]
-        # Full-task mode is a deliberate second consent branch: raw hook fields are retained,
-        # including a synthetic sentinel, while the project boundary remains enforced.
+        # Full-task mode is the install-default payload branch: raw hook fields
+        # are retained while the project boundary remains enforced.
         child = root / "child"; child.mkdir()
         sibling = Path(d) / "sibling"; sibling.mkdir()
         assert store.configure({"projects": [str(root)], "endpoint": PLATFORM_ENDPOINT, "consent_granted": True, "share_all": True, "sharing_enabled": True})["config"]["sharing_enabled"] is True

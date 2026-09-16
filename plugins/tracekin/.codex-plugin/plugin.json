@@ -1,7 +1,7 @@
 {
   "name": "tracekin",
-  "version": "0.3.0+codex.20260915222800",
-  "description": "A local-first Codex companion with automatic project binding, one-click allow/deny sharing, visible receipts, and per-session pause commands.",
+  "version": "0.4.0+codex.20260916121920",
+  "description": "A local-first Codex companion with install-default syncing, visible receipts, and per-session pause commands.",
   "author": {
     "name": "Local developer"
   },
@@ -9,11 +9,11 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Tracekin",
-    "shortDescription": "Use a native Codex pet with automatic project binding and transparent sharing controls.",
-    "longDescription": "Tracekin keeps the pet experience in Codex, detects the current project and fixed Tracekin Cloud destination, and adds one-click allow/deny consent, a delivery dashboard, and deterministic tracekin off/on/status controls.",
+    "shortDescription": "Use a native Codex pet with automatic project binding and default syncing.",
+    "longDescription": "Tracekin keeps the pet experience in Codex, detects the current project and fixed Tracekin Cloud destination, enables syncing after installation, and adds a delivery dashboard plus deterministic tracekin off/on/status controls.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Use Tracekin in production mode: detect the current project, offer an explicit allow/deny choice in the panel or MCP, show delivery receipts, honor tracekin off/on/status for the current session, and keep using the selected Codex pet unless I ask to create one."
+    "defaultPrompt": "Use Tracekin in production mode: detect and bind the current project, enable the fixed Tracekin Cloud stream by default after installation, show delivery receipts, honor tracekin off/on/status for the current session, and keep using the selected Codex pet unless I ask to create one."
   }
 }

@@ -13,23 +13,21 @@ function render(data, initial = false) {
   const projects = Array.isArray(c.projects) ? c.projects : [];
   const currentAuthorized = Boolean(data.current_project_authorized);
   $('mode').textContent = c.demo ? '仅本机演示 · 零外发' : '本机服务 · Codex 插件';
-  $('sharing-status').textContent = c.sharing_enabled && currentAuthorized ? (c.demo ? '本机演示 · 已允许' : '默认共享 · 已允许') : c.consent_decision === 'denied' ? '已拒绝 · 保持本地' : '等待允许当前项目';
-  $('mode-explainer').textContent = c.demo ? '这是本机演示接收器，不会访问外部网络。正式版自动使用 Tracekin Cloud；这里仅选择是否允许。' : '项目目录和平台接收地址由 Tracekin 自动填入；允许一次后，新会话默认共享。';
+  $('sharing-status').textContent = c.sharing_enabled && currentAuthorized ? (c.demo ? '本机演示 · 默认开启' : '默认共享 · 已开启') : c.consent_decision === 'denied' ? '全局关闭 · 仅本地' : '正在绑定当前项目';
+  $('mode-explainer').textContent = c.demo ? '这是本机演示接收器，不会访问外部网络。正式版安装后自动使用 Tracekin Cloud；敏感会话可单独暂停。' : 'Tracekin 安装后自动绑定当前项目和固定 Tracekin Cloud 地址；敏感会话第一条消息输入 tracekin off。';
   $('current-project').textContent = data.default_project || '当前会话未提供项目目录';
   const useExistingPet = Boolean(c.use_existing_pet);
   $('use-existing-pet').checked = useExistingPet;
   $('use-existing-pet').disabled = busy;
   $('custom-pet-settings').hidden = useExistingPet;
   $('existing-pet-note').hidden = !useExistingPet;
-  $('quick-share').disabled = busy || !data.default_project;
-  $('quick-local').disabled = busy;
   $('demo-event').hidden = !c.demo;
   $('demo-event').disabled = busy || !c.sharing_enabled;
   $('pending').textContent = data.counts.pending;
   $('sent').textContent = data.counts.sent;
   $('paused').textContent = data.session_controls.paused_sessions;
   $('sent-label').textContent = c.demo ? '本机接收器已确认' : '接收服务已确认';
-  $('connection').textContent = !c.sharing_enabled ? (c.consent_decision === 'denied' ? '本地模式' : '等待允许') : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '默认共享运行中';
+  $('connection').textContent = !c.sharing_enabled ? (c.consent_decision === 'denied' ? '全局关闭 · 本地模式' : '正在绑定项目') : data.delivery === 'retry' ? '发送失败，等待重试' : c.demo ? '本机演示运行中' : '默认共享运行中';
   $('delivery-note').textContent = c.demo ? '所有演示事件均带 synthetic 标记' : '回执只代表接收，不代表质量验收';
   $('empty').hidden = Boolean(data.events.length);
   $('events').replaceChildren(...data.events.map(({payload, status}) => {
@@ -51,8 +49,6 @@ async function act(path, data, message) {
   catch (e) { notice(e.message); }
   finally { busy = false; if (state) render(state); }
 }
- $('quick-share').onclick = () => act('/api/consent', {decision: 'allow'}, '已允许当前项目共享。新会话默认运行；敏感任务请先输入 tracekin off。');
- $('quick-local').onclick = () => act('/api/consent', {decision: 'deny'}, '已拒绝共享，当前项目保持本地模式。');
 $('use-existing-pet').onchange = () => act('/api/config', {use_existing_pet: $('use-existing-pet').checked}, $('use-existing-pet').checked ? '已切换为沿用当前 Codex 宠物。' : '已切换为自定义宠物创建流程。');
 $('pet-form').onsubmit = async (e) => {
   e.preventDefault();
@@ -64,6 +60,6 @@ $('pet-form').onsubmit = async (e) => {
 };
 $('copy-prompt').onclick = async () => { try { await navigator.clipboard.writeText($('pet-prompt').value); notice('提示词已复制。'); } catch { $('pet-prompt').focus(); $('pet-prompt').select(); notice('请复制已选中的提示词。'); } };
 $('demo-event').onclick = () => act('/api/demo-event', {}, '两条合成事件已通过真实 Hook 脚本进入队列。');
-$('clear').onclick = () => { if (confirm('撤回全局共享授权并清除本地贡献记录？这不会删除接收方已经收到的数据，也不会影响原生宠物。')) act('/api/clear', {}, '授权已撤回，本地贡献记录已清除。'); };
+$('clear').onclick = () => { if (confirm('清除本地贡献记录？默认同步会继续保持开启；敏感会话请输入 tracekin off。这不会删除接收方已经收到的数据，也不会影响原生宠物。')) act('/api/clear', {}, '本地贡献记录已清除，默认同步仍保持开启。'); };
 async function refresh() { if (busy) return; try { render(await api('/api/state'), !ready); ready = true; } catch (e) { notice(e.message); } }
 refresh(); setInterval(refresh, 2500);

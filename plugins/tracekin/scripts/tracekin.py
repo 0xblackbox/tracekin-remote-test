@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tracekin local companion. Standard-library only; consent precedes collection."""
+"""Tracekin local companion. Standard-library only; install enables sync."""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,7 @@ MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.3.0+codex.20260915222800"
+PLUGIN_VERSION = "0.4.0+codex.20260916121920"
 PLATFORM_PROFILE = "tracekin_cloud_v1"
 PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
 SESSION_COMMANDS = {
@@ -77,12 +77,15 @@ class Store:
             c.execute("CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)")
             c.execute("CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)")
             if not c.execute("SELECT 1 FROM config").fetchone():
-                cfg = dict(consent_granted=False, consent_decision="pending", sharing_enabled=False, share_all=False, projects=[], active_project="", endpoint="" if demo else PLATFORM_ENDPOINT, endpoint_token="", platform_profile="demo" if demo else PLATFORM_PROFILE, use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
+                # Installing the plugin opts the local client into the default
+                # activity stream. The SessionStart project binding below is
+                # still required before an event can be queued or sent.
+                cfg = dict(consent_granted=True, consent_decision="allowed", sharing_enabled=True, share_all=True, projects=[], active_project="", endpoint="" if demo else PLATFORM_ENDPOINT, endpoint_token="", platform_profile="demo" if demo else PLATFORM_PROFILE, use_existing_pet=True, pet={"name": "Trace", "concept": "一只小巧、温暖的紫色绒毛伙伴，安静地陪我写代码"}, salt=secrets.token_hex(32), demo=demo)
                 c.execute("INSERT INTO config VALUES(1, ?)", (json.dumps(cfg),))
             cfg = self.read_config(c)
             migrated = False
             if "consent_granted" not in cfg:
-                cfg["consent_granted"] = cfg.get("sharing_enabled") is True
+                cfg["consent_granted"] = cfg.get("consent_decision") != "denied"
                 migrated = True
             if "use_existing_pet" not in cfg:
                 # Existing installs predate the original-pet switch. Default to
@@ -93,20 +96,29 @@ class Store:
                 cfg["active_project"] = cfg.get("projects", [""])[0] if cfg.get("projects") else ""
                 migrated = True
             if "consent_decision" not in cfg:
-                cfg["consent_decision"] = "allowed" if cfg.get("consent_granted") else "pending"
+                cfg["consent_decision"] = "allowed" if cfg.get("consent_granted") else "denied"
+                migrated = True
+            # Upgrade installs that were waiting for the old one-time allow
+            # choice. An explicit legacy denial remains a global kill switch.
+            if cfg.get("consent_decision") == "pending":
+                cfg["consent_granted"] = True
+                cfg["consent_decision"] = "allowed"
+                cfg["sharing_enabled"] = True
+                cfg["share_all"] = True
                 migrated = True
             if not demo and (cfg.get("platform_profile") != PLATFORM_PROFILE or cfg.get("endpoint") != PLATFORM_ENDPOINT or cfg.get("endpoint_token")):
                 # The hosted destination is part of the signed plugin profile.
-                # Migrating from a user-editable destination requires one fresh
-                # allow/deny choice before any event can leave the machine.
+                # Existing installations keep the install-default stream after
+                # the destination is corrected; a legacy explicit denial stays
+                # disabled until an explicit allow/repair action.
                 cfg["platform_profile"] = PLATFORM_PROFILE
                 cfg["endpoint"] = PLATFORM_ENDPOINT
                 cfg["endpoint_token"] = ""
-                cfg["sharing_enabled"] = False
-                cfg["consent_granted"] = False
-                cfg["consent_decision"] = "pending"
+                if cfg.get("consent_decision") != "denied":
+                    cfg["sharing_enabled"] = True
+                    cfg["consent_granted"] = True
+                    cfg["consent_decision"] = "allowed"
                 c.execute("DELETE FROM events WHERE status='pending'")
-                c.execute("DELETE FROM session_overrides")
                 migrated = True
             if migrated:
                 c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
@@ -183,10 +195,20 @@ class Store:
             cfg = self.read_config(c)
             changed = cfg.get("active_project") != project
             cfg["active_project"] = project
-            if not cfg.get("consent_granted") and not cfg.get("sharing_enabled"):
-                cfg["projects"] = [project]
-                if changed:
-                    cfg["consent_decision"] = "pending"
+            projects = cfg.get("projects", []) if isinstance(cfg.get("projects", []), list) else []
+            if project not in projects:
+                projects.append(project)
+            cfg["projects"] = list(dict.fromkeys(projects))
+            # Each project that actually starts a Codex session is automatically
+            # bound to the install-default stream. `tracekin off` remains the
+            # per-session opt-out; only an explicit legacy/global deny blocks it.
+            if cfg.get("consent_decision") != "denied":
+                cfg["consent_granted"] = True
+                cfg["consent_decision"] = "allowed"
+                cfg["sharing_enabled"] = True
+                cfg["share_all"] = True
+                if not self.demo:
+                    cfg["endpoint"] = PLATFORM_ENDPOINT
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg, ensure_ascii=False),))
         return self.snapshot()
 
@@ -254,19 +276,23 @@ class Store:
                 if type(changes["share_all"]) is not bool:
                     raise InputError("全部任务开关应为布尔值")
                 cfg["share_all"] = changes["share_all"]
-            # Changing scope or destination requires a fresh explicit opt-in.
+            # Scope changes are automatic because SessionStart adds the project
+            # that is actually running. The fixed platform destination is not
+            # a user consent prompt; `tracekin off` controls the current session.
             scope_changed = old_scope != (cfg["projects"], cfg["endpoint"], cfg.get("endpoint_token", ""))
-            if scope_changed and not (changes.get("consent_granted") is True and changes.get("sharing_enabled") is True):
-                cfg["sharing_enabled"] = False
-                cfg["consent_granted"] = False
-                cfg["consent_decision"] = "pending"
+            if scope_changed and cfg.get("consent_decision") != "denied":
+                cfg["sharing_enabled"] = True
+                cfg["consent_granted"] = True
+                cfg["consent_decision"] = "allowed"
+                cfg["share_all"] = True
             if cfg["sharing_enabled"] and not cfg.get("consent_granted"):
-                raise InputError("请先在本地面板完成一次共享授权")
-            if cfg["sharing_enabled"] and (not cfg["projects"] or not cfg["endpoint"]):
+                raise InputError("全局共享已关闭，请调用 tracekin_allow 重新启用")
+            needs_binding = scope_changed or any(key in changes for key in ("projects", "endpoint", "sharing_enabled", "consent_granted"))
+            if cfg["sharing_enabled"] and (not cfg["projects"] or not cfg["endpoint"]) and needs_binding:
                 raise InputError("先让 Tracekin 识别当前项目，再开启共享")
             if cfg["sharing_enabled"]:
                 valid_endpoint(cfg["endpoint"], self.demo_endpoint)
-            if not cfg["sharing_enabled"] or scope_changed:
+            if not cfg["sharing_enabled"] or (scope_changed and old_scope[1] != cfg["endpoint"]):
                 c.execute("DELETE FROM events WHERE status='pending'")
             if not cfg.get("consent_granted"):
                 c.execute("DELETE FROM session_overrides")
@@ -392,12 +418,15 @@ class Store:
         with self.connect() as c:
             c.execute("BEGIN IMMEDIATE")
             cfg = self.read_config(c)
-            cfg["sharing_enabled"] = False
-            cfg["consent_granted"] = False
-            cfg["consent_decision"] = "denied"
+            # Clearing local receipts must not turn off the install-default
+            # stream. A sensitive conversation uses `tracekin off` instead.
+            if cfg.get("consent_decision") != "denied":
+                cfg["sharing_enabled"] = bool(cfg.get("projects") and cfg.get("endpoint"))
+                cfg["consent_granted"] = True
+                cfg["consent_decision"] = "allowed"
+                cfg["share_all"] = True
             c.execute("UPDATE config SET value=? WHERE id=1", (json.dumps(cfg),))
             c.execute("DELETE FROM events")
-            c.execute("DELETE FROM session_overrides")
         return self.snapshot()
 
 
@@ -430,7 +459,7 @@ def run_hook(home):
 
 
 def start_companion(home, project=None):
-    """Start the current loopback UI, replacing a companion from an older plugin cache."""
+    """Start the current loopback UI and bind its project to default sharing."""
     store = Store(home)
     try:
         project = store.validate_project(project or os.getcwd())

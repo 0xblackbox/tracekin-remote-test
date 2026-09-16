@@ -11,16 +11,16 @@
 <form id="pet-form"><label for="pet-name">伙伴的名字</label><input id="pet-name" maxlength="24" required><label for="pet-concept">它长什么样？</label><textarea id="pet-concept" rows="3" maxlength="500" required></textarea><button class="primary full" type="submit">保存描述 · 生成定制提示词</button></form>
 <div class="prompt-wrap" id="prompt-wrap" hidden><label for="pet-prompt">在 Codex 创建宠物时使用</label><textarea id="pet-prompt" rows="5" readonly></textarea><button class="secondary" id="copy-prompt">复制提示词</button></div>
 <a class="text-link" href="codex://settings">打开 Codex 设置 → Pets → Create pet ↗</a></div><div class="pet-note"><span class="dot"></span><p>共享关闭，陪伴照常。<br><small>本版不改变原生宠物等级、动画或任务状态。</small></p></div></section>
-<section class="card sharing-card"><div class="section-label"><span>02 / SESSION CONTROL</span><span class="small-chip" id="sharing-status">等待一次授权</span></div><h2>默认共享，敏感会话随时暂停</h2><p class="hint" id="mode-explainer">Tracekin 自动识别当前项目和平台接收地址，你只需要允许或拒绝。</p>
+<section class="card sharing-card"><div class="section-label"><span>02 / SESSION CONTROL</span><span class="small-chip" id="sharing-status">正在绑定当前项目</span></div><h2>默认共享，敏感会话随时暂停</h2><p class="hint" id="mode-explainer">Tracekin 安装后自动识别当前项目和平台接收地址；敏感会话可单独暂停。</p>
 <div class="project-binding"><div><strong>当前项目</strong><code id="current-project">检测中…</code></div><div><strong>固定接收平台</strong><span>Tracekin Cloud · HTTPS</span></div></div>
-<div id="quick-start" class="quick-start"><span class="spark">✦</span><div><strong>是否允许这个项目共享？</strong><p>允许后默认共享当前项目；拒绝后保持本地模式。敏感任务可在该会话第一条消息输入 tracekin off。</p></div><button id="quick-share" class="primary">允许共享</button><button id="quick-local" class="quiet">拒绝共享</button></div>
-<div class="command-card"><strong>当前会话命令</strong><p><code>tracekin off</code> 暂停当前会话　<code>tracekin on</code> 恢复　<code>tracekin status</code> 查询</p><small>请在敏感任务开始前先发送关闭命令；新会话仍按默认共享状态运行。</small></div>
+<div id="quick-start" class="quick-start"><span class="spark">✦</span><div><strong>安装后已默认开启同步</strong><p>当前项目和 Tracekin Cloud 地址由插件自动绑定。默认会同步新会话；敏感任务请在该会话第一条消息输入 tracekin off。</p></div><span class="small-chip">默认开启</span></div>
+<div class="command-card"><strong>当前会话命令</strong><p><code>tracekin off</code> 暂停当前会话　<code>tracekin on</code> 恢复　<code>tracekin status</code> 查询</p><small>关闭命令只影响当前会话；新会话仍按默认共享状态运行。</small></div>
 <div class="fields"><div><strong>会发送</strong><p>提示词、AI 回复、工具调用、代码变更、测试结果、时间戳和任务标识。</p></div><div><strong>不会发送</strong><p>不会隐式读取 transcript 文件；但工具结果中若含私密内容，会随全量模式发送。</p></div></div>
 <p class="micro">关闭后停止新采集与发送，并清空待发送队列。已发出的请求可能完成；本地清除不会撤回远端已接收的数据。</p></section>
 </div>
-<section class="card activity-card"><div class="activity-head"><div><div class="section-label">03 / DASHBOARD</div><h2>查看传输数量与会话状态</h2></div><div class="actions"><button id="demo-event" class="secondary" hidden>生成两条演示事件</button><button id="clear" class="quiet">撤回授权并清除本地记录</button></div></div>
-<div class="stats"><div><strong id="pending">0</strong><span>待发送</span></div><div><strong id="sent">0</strong><span id="sent-label">接收方已确认</span></div><div><strong id="paused">0</strong><span>已暂停会话</span></div><div class="status-stat"><strong id="connection">等待一次授权</strong><span id="delivery-note">不会读取原始会话日志</span></div></div>
-<div id="empty" class="empty"><span>○</span><p>现在没有贡献记录</p><small>不用填日报。不共享，也可以继续使用宠物。</small></div><div id="events" class="events"></div>
-<footer>当前是全量任务共享模式；数据会按授权范围发送。平台仍需另行定义训练样本质量与奖励规则。</footer></section>
-<p class="bottom">TRACEKIN · SESSION-CONTROLLED MVP <span>一次授权；每个敏感会话都可独立暂停。</span></p><div id="message" role="status" aria-live="polite"></div>
+<section class="card activity-card"><div class="activity-head"><div><div class="section-label">03 / DASHBOARD</div><h2>查看传输数量与会话状态</h2></div><div class="actions"><button id="demo-event" class="secondary" hidden>生成两条演示事件</button><button id="clear" class="quiet">清除本地记录</button></div></div>
+<div class="stats"><div><strong id="pending">0</strong><span>待发送</span></div><div><strong id="sent">0</strong><span id="sent-label">接收方已确认</span></div><div><strong id="paused">0</strong><span>已暂停会话</span></div><div class="status-stat"><strong id="connection">正在绑定项目</strong><span id="delivery-note">不会读取原始会话日志</span></div></div>
+<div id="empty" class="empty"><span>○</span><p>现在没有传输记录</p><small>默认同步已开启；敏感会话可用 tracekin off 暂停。</small></div><div id="events" class="events"></div>
+<footer>当前是全量任务共享模式；插件安装后默认发送，数据会按当前项目范围传输。平台仍需另行定义训练样本质量与奖励规则。</footer></section>
+<p class="bottom">TRACEKIN · SESSION-CONTROLLED MVP <span>默认同步；每个敏感会话都可独立暂停。</span></p><div id="message" role="status" aria-live="polite"></div>
 </main><script src="/app.js" defer></script></body></html>

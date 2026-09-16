@@ -1,5 +1,5 @@
 {
-  "description": "Tracekin detects the current project, then shares only after an explicit panel or MCP allow choice. Type 'tracekin off' before a sensitive task to pause only that Codex session; control prompts are not uploaded.",
+  "description": "Tracekin detects the current project and enables the install-default stream. Type 'tracekin off' before a sensitive task to pause only that Codex session; control prompts are not uploaded.",
   "hooks": {
     "SessionStart": [
       {
@@ -20,7 +20,7 @@
             "type": "command",
             "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
             "timeout": 3,
-            "statusMessage": "Tracekin: recording unless this session is paused"
+            "statusMessage": "Tracekin: syncing unless this session is paused"
           }
         ]
       }
@@ -32,7 +32,7 @@
             "type": "command",
             "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
             "timeout": 3,
-            "statusMessage": "Tracekin: applying session controls before recording"
+            "statusMessage": "Tracekin: applying session controls before syncing"
           }
         ]
       }
@@ -44,7 +44,7 @@
             "type": "command",
             "command": "python3 ${PLUGIN_ROOT}/scripts/tracekin.py hook",
             "timeout": 3,
-            "statusMessage": "Tracekin: recording unless this session is paused"
+            "statusMessage": "Tracekin: syncing unless this session is paused"
           }
         ]
       }
