@@ -19,7 +19,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.8.0+build.20260917031500"
+EXPECTED_VERSION = "0.8.1+build.20260917184133"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
@@ -634,16 +634,19 @@ def test_gemini_hook_payloads_get_session_turns(d, root):
     db = write_legacy_db(legacy, legacy_config(root, consent_granted=True, consent_decision="allowed", sharing_enabled=True, share_all=True), FULL_SCHEMA)
     old = Store(legacy, create=False)
     assert old.record(gemini_event(root, "BeforeAgent")) == "queued" and old.record(gemini_event(root, "AfterAgent")) == "queued"
-    assert tables_in(db) == {"config", "events", "session_overrides"} and old.snapshot()["counts"] == {"pending": 2, "sent": 0}
+    assert {"session_turns", "control_turns"} <= tables_in(db), "the hook write path adds the auxiliary tables on demand"
+    assert old.snapshot()["counts"] == {"pending": 2, "sent": 0} and len({e["payload"]["turn_id"] for e in old.snapshot()["events"]}) == 1
     # Session controls from a Gemini prompt; the CLI answers {} for every event.
     env = dict(base_env(), TRACEKIN_HOME=str(d / "gemini"), GEMINI_PROJECT_DIR=str(root), GEMINI_SESSION_ID="gemini-session-secret")
     off = run_cli("hook", "--harness", "gemini", stdin=json.dumps(gemini_event(root, "BeforeAgent", prompt="`tracekin off`")), env=env, cwd=root)
     assert off.returncode == 0 and json.loads(off.stdout) == {} and store.snapshot()["session_controls"]["paused_sessions"] == 1
     assert store.record(gemini_event(root, "AfterTool", timestamp="x")) == "session_disabled"
     assert store.record(gemini_event(root, "BeforeAgent", prompt="tracekin on")) == "session_enabled"
-    auto = run_cli("hook", stdin=json.dumps(gemini_event(root, "AfterTool", timestamp="2026-09-17T02:02:00.000Z")), env=env, cwd=root)
-    # `tracekin off` dropped this session's five pending events; the other session's two remain, plus this one.
-    assert auto.returncode == 0 and json.loads(auto.stdout) == {} and store.snapshot()["counts"]["pending"] == 3, store.snapshot()["counts"]
+    assert store.record(gemini_event(root, "AfterTool", timestamp="2026-09-17T02:01:59.000Z")) == "control_turn", "the rest of the `tracekin on` turn is withheld"
+    assert store.record(gemini_event(root, "BeforeAgent", prompt="next task", timestamp="2026-09-17T02:02:00.000Z")) == "queued"
+    auto = run_cli("hook", stdin=json.dumps(gemini_event(root, "AfterTool", timestamp="2026-09-17T02:02:01.000Z")), env=env, cwd=root)
+    # `tracekin off` dropped this session's five pending events; the other session's two remain, plus the new prompt and tool call.
+    assert auto.returncode == 0 and json.loads(auto.stdout) == {} and store.snapshot()["counts"]["pending"] == 4, store.snapshot()["counts"]
     # SessionStart through the extension wrapper, from an unrelated directory.
     home = d / "gemini-ext"
     elsewhere = d / "elsewhere"
@@ -830,6 +833,54 @@ def test_tracekin_off_and_on_control_only_current_session(d, root):
     assert store.snapshot()["counts"] == {"pending": 2, "sent": 0}
     cfg = store.snapshot()["config"]
     assert cfg["consent_granted"] is True and cfg["consent_decision"] == "allowed" and cfg["sharing_enabled"] is True
+
+
+def test_control_turns_are_withheld_entirely(d, root):
+    """`tracekin status` / `tracekin on` keep the session sharing, so the rest of that
+    turn (the status tool call and the model's confirmation) must not be uploaded either."""
+    store = Store(d / "control-turns")
+    store.set_active_project(root)
+    stop = lambda turn, text: {"hook_event_name": "Stop", "session_id": "session-secret", "turn_id": turn, "cwd": str(root), "last_assistant_message": text}
+    assert store.record(tool_event(root, turn="work-1", call="w1")) == "queued"
+    # Turn ids (Codex / Claude Code / Cursor): everything sharing the control prompt's turn is dropped.
+    assert store.record(prompt_event(root, "tracekin status", turn="status-turn")) == "session_enabled"
+    assert store.record(tool_event(root, turn="status-turn", call="status-tool", tool_name="mcp__tracekin__tracekin_status", tool_response="STATUS_TOOL_OUTPUT")) == "control_turn"
+    assert store.record(stop("status-turn", "STATUS_REPLY_TEXT")) == "control_turn"
+    assert store.snapshot()["counts"] == {"pending": 1, "sent": 0}
+    # The next ordinary turn is captured again.
+    assert store.record(prompt_event(root, "ordinary prompt", turn="work-2")) == "queued"
+    assert store.record(stop("work-2", "ORDINARY_REPLY")) == "queued"
+    # `tracekin on` after an off: the resume turn is withheld, the one after it is not.
+    assert store.record(prompt_event(root, "tracekin off", turn="off-turn")) == "session_disabled"
+    assert store.record(prompt_event(root, "tracekin on", turn="on-turn")) == "session_enabled"
+    assert store.record(stop("on-turn", "RESUMED_REPLY_TEXT")) == "control_turn"
+    assert store.record(tool_event(root, turn="work-3", call="w3")) == "queued"
+    raw = store.db.read_bytes()
+    assert b"STATUS_TOOL_OUTPUT" not in raw and b"STATUS_REPLY_TEXT" not in raw and b"RESUMED_REPLY_TEXT" not in raw and b"status-turn" not in raw
+    cfg = store.snapshot()["config"]
+    assert cfg["consent_decision"] == "allowed" and cfg["sharing_enabled"] is True
+    # No turn ids (Gemini CLI / OpenCode): the control prompt opens its own counted turn.
+    assert store.record(gemini_event(root, "BeforeAgent", prompt="first task")) == "queued"
+    assert store.record(gemini_event(root, "BeforeAgent", prompt="tracekin status", timestamp="2026-09-17T03:00:00.000Z")) == "session_enabled"
+    assert store.record(gemini_event(root, "AfterTool", timestamp="2026-09-17T03:00:01.000Z", tool_response={"output": "GEMINI_STATUS_OUTPUT"})) == "control_turn"
+    assert store.record(gemini_event(root, "AfterAgent", timestamp="2026-09-17T03:00:02.000Z", prompt_response="GEMINI_STATUS_REPLY")) == "control_turn"
+    assert store.record(gemini_event(root, "BeforeAgent", prompt="second task", timestamp="2026-09-17T03:01:00.000Z")) == "queued"
+    assert store.record(gemini_event(root, "AfterAgent", timestamp="2026-09-17T03:01:05.000Z", prompt_response="SECOND_REPLY")) == "queued"
+    raw = store.db.read_bytes()
+    assert b"GEMINI_STATUS_OUTPUT" not in raw and b"GEMINI_STATUS_REPLY" not in raw and b"SECOND_REPLY" in raw
+    # A database from before this table existed is protected by the first hook call, not only by SessionStart.
+    legacy = d / "control-legacy"
+    db = write_legacy_db(legacy, legacy_config(root, consent_granted=True, consent_decision="allowed", sharing_enabled=True, share_all=True), FULL_SCHEMA)
+    old = Store(legacy, create=False)
+    assert old.record(prompt_event(root, "tracekin status", turn="legacy-status")) == "session_enabled"
+    assert old.record(stop("legacy-status", "LEGACY_STATUS_REPLY")) == "control_turn"
+    assert "control_turns" in tables_in(db) and b"LEGACY_STATUS_REPLY" not in db.read_bytes()
+    # The real hook reports the outcome in the keys-only trace.
+    (store.home / "debug-hooks").touch()
+    hook(store.home, prompt_event(root, "tracekin status", turn="traced-status"))
+    hook(store.home, stop("traced-status", "TRACED_REPLY"))
+    results = [json.loads(line)["result"] for line in (store.home / "hook-debug.log").read_text().splitlines()]
+    assert results == ["session_enabled", "control_turn"]
 
 
 def test_session_commands_tolerate_client_formatting(d, root):

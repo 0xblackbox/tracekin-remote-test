@@ -17,7 +17,7 @@ The hooks handle these commands deterministically before anything is captured; t
 | `tracekin on` | This session resumes. | Confirm briefly. |
 | `tracekin status` | Nothing changes. | Call the read-only `tracekin_status` MCP tool and report the result. |
 
-Backticks, quotes, bold markers, trailing punctuation and letter case are ignored, and the command may be the first line of a longer prompt. Control prompts are never uploaded.
+Backticks, quotes, bold markers, trailing punctuation and letter case are ignored, and the command may be the first line of a longer prompt. Neither the control prompt nor anything else from the turn it opens is uploaded, so calling `tracekin_status` and replying in that turn is safe.
 
 ## Status tool
 

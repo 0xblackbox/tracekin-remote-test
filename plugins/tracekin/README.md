@@ -124,6 +124,8 @@ Every surface uses `~/.tracekin` (`TRACEKIN_HOME` overrides it explicitly, for t
 
 Before comparison, backticks, quotes, bold markers, brackets and similar decorations are stripped along with trailing punctuation, case is ignored, and if the whole message does not match, the first line is tried. A message recognized as a command is withheld entirely; pausing too eagerly beats leaking a prompt. Questions such as `how does tracekin off work?` are not misread as commands.
 
+The turn a command opens is withheld as a whole. `tracekin status` and `tracekin on` leave the session sharing, so the turn is recorded in the `control_turns` table (hashed session and turn ids) and every later event of that turn, such as the status tool call and the model's confirmation, returns `control_turn` instead of being queued. Harnesses without a turn id give the control prompt its own counted turn. The hook write path creates the auxiliary tables on demand, so a database from an older version is protected by its first hook call rather than its next `SessionStart`.
+
 ### Delivery
 
 The companion's worker picks the oldest pending event every 0.5 s, holds no database write lock during the request, and times out after 10 s. Outcomes:

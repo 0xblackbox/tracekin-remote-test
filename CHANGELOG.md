@@ -4,6 +4,11 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 
 Versions are `X.Y.Z+build.<timestamp>` (`+codex.<timestamp>` for 0.4.x). The timestamp only exists so plugin caches notice a new build.
 
+## 0.8.1 · 2026-09-17
+
+- Privacy fix: the whole turn a control command opens is withheld. Previously `tracekin status` and `tracekin on` kept the prompt back but still uploaded the status tool call and the model's confirmation from the same turn. Such turns are now recorded in a `control_turns` table and later events of the turn return `control_turn`; harnesses without a turn id give the control prompt its own counted turn.
+- The hook write path creates the auxiliary tables (`session_turns`, `control_turns`) on demand, so a database from an older version is covered by its first hook call instead of its next `SessionStart`.
+
 ## 0.8.0 · 2026-09-17
 
 - Added OpenCode: `opencode/tracekin.js`, an ESM plugin with no npm dependencies, subscribes to `session.created` / `chat.message` / `tool.execute.after` / `session.idle`, translates them into the same payloads the other harnesses send, and hands them to `tracekin.py`. The assistant reply comes from the latest assistant text part; subagent sessions do not restart the companion.

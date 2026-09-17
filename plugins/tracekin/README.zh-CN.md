@@ -124,6 +124,8 @@ python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-open
 
 指令与提示词比较前会去掉反引号、引号、加粗星号、括号等装饰和结尾标点，忽略大小写，整段不匹配时再看第一行。识别为指令的整条消息都不上传，宁可多暂停也不漏传；`how does tracekin off work?` 之类的提问不会被误判。
 
+指令开启的那一轮整体不上报。`tracekin status` 和 `tracekin on` 之后会话仍在共享，所以这一轮会记入 `control_turns` 表（会话与轮次 ID 均为哈希），同一轮后续的事件，例如状态工具调用和模型的确认回复，返回 `control_turn` 而不入队。没有轮次 ID 的 harness 会给控制指令单独计一轮。hook 写路径会按需创建这些辅助表，所以旧版本的数据库在第一次 hook 调用时就受到保护，不必等到下一次 `SessionStart`。
+
 ### 投递
 
 companion 的 worker 每 0.5 秒取最旧的待发送事件，发送期间不持有数据库写锁，超时 10 秒。结果处理：

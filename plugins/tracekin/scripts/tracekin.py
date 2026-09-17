@@ -33,7 +33,7 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.8.0+build.20260917031500"
+PLUGIN_VERSION = "0.8.1+build.20260917184133"
 HARNESSES = ("codex", "claude-code", "cursor", "gemini", "opencode")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
 # Cursor and Gemini CLI name their lifecycle events differently; map them onto the shared shape.
@@ -72,9 +72,14 @@ SCHEMA_DDL = (
     "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','sent')), created REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS session_overrides (session_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL CHECK(enabled IN (0,1)), updated REAL NOT NULL)",
-    # Per-session turn counter for harnesses whose hooks carry no turn id (Gemini CLI).
+    # Per-session turn counter for harnesses whose hooks carry no turn id (Gemini CLI, OpenCode).
     "CREATE TABLE IF NOT EXISTS session_turns (session_id TEXT PRIMARY KEY, turn INTEGER NOT NULL, updated REAL NOT NULL)",
+    # Turns opened by a control command (tracekin off / on / status): nothing from them is uploaded.
+    "CREATE TABLE IF NOT EXISTS control_turns (session_id TEXT NOT NULL, turn_id TEXT NOT NULL, updated REAL NOT NULL, PRIMARY KEY (session_id, turn_id))",
 )
+# Auxiliary tables added after 0.4.x. The hook write path creates them on demand
+# so an upgraded database is protected before its next SessionStart.
+AUX_DDL = SCHEMA_DDL[3:]
 SESSION_COMMANDS = {
     "tracekin off": "off",
     "/tracekin off": "off",
@@ -337,11 +342,33 @@ class Store:
         # Only write paths (record/deliver) prune; status never does.
         c.execute("DELETE FROM events WHERE created < ?", (time.time() - EVENT_TTL,))
         c.execute("DELETE FROM session_overrides WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
-        try:
-            c.execute("DELETE FROM session_turns WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
-        except sqlite3.OperationalError as error:
-            if "no such table" not in str(error).lower():
-                raise
+        for table in ("session_turns", "control_turns"):
+            try:
+                c.execute(f"DELETE FROM {table} WHERE updated < ?", (time.time() - SESSION_OVERRIDE_TTL,))
+            except sqlite3.OperationalError as error:
+                if "no such table" not in str(error).lower():
+                    raise
+
+    def mark_control_turn(self, c, cfg, event, harness):
+        """Remember that this turn was opened by a control command.
+
+        `tracekin status` and `tracekin on` leave the session sharing, so
+        without this the rest of the turn (the status tool call, the model's
+        confirmation) would be uploaded as ordinary activity. Harnesses
+        without a turn id get a fresh counted turn for the control prompt.
+        """
+        session_hash = self.digest(cfg, "session", event["session_id"])
+        turn = event.get("turn_id")
+        if not turn and harness != "codex":
+            turn = self.assign_turn(c, session_hash, "UserPromptSubmit")
+        if not isinstance(turn, str) or not turn or len(turn) > 4096:
+            return
+        c.execute("INSERT OR REPLACE INTO control_turns VALUES (?, ?, ?)", (session_hash, self.digest(cfg, "turn", turn), time.time()))
+
+    def is_control_turn(self, c, cfg, session_hash, turn):
+        if not isinstance(turn, str) or not turn:
+            return False
+        return c.execute("SELECT 1 FROM control_turns WHERE session_id=? AND turn_id=?", (session_hash, self.digest(cfg, "turn", turn))).fetchone() is not None
 
     @staticmethod
     def assign_turn(c, session_hash, kind):
@@ -617,9 +644,13 @@ class Store:
                 return "unsupported"
             if not isinstance(event.get("session_id"), str) or not event["session_id"] or len(event["session_id"]) > 4096:
                 return "invalid"
+            for statement in AUX_DDL:
+                c.execute(statement)
             command = self.parse_session_command(event)
             if command:
-                return self.apply_session_command(c, cfg, event["session_id"], command)
+                result = self.apply_session_command(c, cfg, event["session_id"], command)
+                self.mark_control_turn(c, cfg, event, harness)
+                return result
             if not cfg["sharing_enabled"] or not cfg.get("consent_granted"):
                 return "disabled"
             session_hash = self.digest(cfg, "session", event["session_id"])
@@ -629,6 +660,9 @@ class Store:
             if not event.get("turn_id") and harness != "codex":
                 # Codex always sends turn_id; a payload without one is not Codex's and stays invalid.
                 event["turn_id"] = self.assign_turn(c, session_hash, kind)
+            if self.is_control_turn(c, cfg, session_hash, event.get("turn_id")):
+                # The whole turn a control command opened is withheld, not just the command.
+                return "control_turn"
             for key in ("turn_id", "cwd"):
                 if not isinstance(event.get(key), str) or not event[key] or len(event[key]) > 4096:
                     return "invalid"

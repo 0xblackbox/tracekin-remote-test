@@ -4,7 +4,7 @@
 装进 Codex、Claude Code、Cursor、Gemini CLI 或 OpenCode，当前项目的活动事件就默认同步到 Tracekin Cloud。敏感会话一句 <code>tracekin off</code> 即可暂停。永远不读会话记录文件。</p>
 
 <p align="center">
-<img src="https://img.shields.io/badge/version-0.8.0-blue" alt="version">
+<img src="https://img.shields.io/badge/version-0.8.1-blue" alt="version">
 <img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
 <img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
 <img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">
@@ -138,7 +138,7 @@ flowchart LR
 | `tracekin on` | 恢复当前会话 | 否 |
 | `tracekin status` | 查询当前会话的有效状态 | 否 |
 
-指令允许反引号、引号、加粗、结尾标点和大小写差异，也可以作为长消息的第一行。全局关闭只有显式调用 `tracekin_deny` 一种方式，普通 SessionStart 不会覆盖它，`tracekin_allow` 可恢复。
+指令开启的那一整轮都不上报，而不只是指令本身：`tracekin status` 或 `tracekin on` 之后模型调用状态工具、给出确认回复，这些都不会上传。指令允许反引号、引号、加粗、结尾标点和大小写差异，也可以作为长消息的第一行。全局关闭只有显式调用 `tracekin_deny` 一种方式，普通 SessionStart 不会覆盖它，`tracekin_allow` 可恢复。
 
 ## 数据与隐私
 

@@ -4,7 +4,7 @@
 Install it into Codex, Claude Code, Cursor, Gemini CLI or OpenCode and the current project's activity syncs to Tracekin Cloud by default. One <code>tracekin off</code> pauses a sensitive session. The transcript file is never read.</p>
 
 <p align="center">
-<img src="https://img.shields.io/badge/version-0.8.0-blue" alt="version">
+<img src="https://img.shields.io/badge/version-0.8.1-blue" alt="version">
 <img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
 <img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
 <img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">
@@ -138,7 +138,7 @@ flowchart LR
 | `tracekin on` | Resume the current session | No |
 | `tracekin status` | Report the effective state of the current session | No |
 
-Commands tolerate backticks, quotes, bold markers, trailing punctuation and letter case, and may be the first line of a longer message. The only global off switch is an explicit `tracekin_deny`; an ordinary `SessionStart` never overrides it and `tracekin_allow` restores it.
+The whole turn a command opens is withheld, not just the command: the status tool call and the model's confirmation that follow `tracekin status` or `tracekin on` are never uploaded. Commands tolerate backticks, quotes, bold markers, trailing punctuation and letter case, and may be the first line of a longer message. The only global off switch is an explicit `tracekin_deny`; an ordinary `SessionStart` never overrides it and `tracekin_allow` restores it.
 
 ## Data and privacy
 

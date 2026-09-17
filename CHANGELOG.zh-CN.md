@@ -4,6 +4,11 @@
 
 版本格式 `X.Y.Z+build.<时间戳>`（0.4.x 为 `+codex.<时间戳>`），时间戳只用于让插件缓存识别新版本。
 
+## 0.8.1 · 2026-09-17
+
+- 隐私修复：控制指令开启的那一整轮都不上报。此前 `tracekin status` 和 `tracekin on` 只拦住了提示词本身，同一轮里的状态工具调用和模型的确认回复仍会上传。现在这类轮次记入 `control_turns` 表，同轮后续事件返回 `control_turn`；没有轮次 ID 的 harness 会给控制指令单独计一轮。
+- hook 写路径按需创建辅助表（`session_turns`、`control_turns`），旧版本的数据库在第一次 hook 调用时就受到保护，不必等到下一次 `SessionStart`。
+
 ## 0.8.0 · 2026-09-17
 
 - 新增 OpenCode：`opencode/tracekin.js`（无 npm 依赖的 ESM 插件）订阅 `session.created` / `chat.message` / `tool.execute.after` / `session.idle`，翻译成与其他 harness 相同的 payload 交给 `tracekin.py`；助手回复取自最近的 assistant 文本 part；子代理会话不重复拉起 companion。
