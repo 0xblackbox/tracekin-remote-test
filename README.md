@@ -1,39 +1,113 @@
-# Tracekin
+<h1 align="center">Tracekin</h1>
 
-English | [简体中文](README.zh-CN.md)
+<p align="center"><strong>Local-first activity companion for coding agents.</strong><br>
+Install it into Codex, Claude Code, Cursor, Gemini CLI or OpenCode and the current project's activity syncs to Tracekin Cloud by default. One <code>tracekin off</code> pauses a sensitive session. The transcript file is never read.</p>
 
-**Local-first activity companion for coding agents.** Tracekin runs as a plugin inside Codex, Claude Code, Cursor, Gemini CLI and OpenCode: installing it syncs the current project's activity events to Tracekin Cloud by default, one `tracekin off` pauses a sensitive session, and the transcript file is never read.
+<p align="center">
+<img src="https://img.shields.io/badge/version-0.8.0-blue" alt="version">
+<img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
+<img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
+<img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">
+<img src="https://img.shields.io/badge/Gemini_CLI-extension-1a73e8" alt="Gemini CLI">
+<img src="https://img.shields.io/badge/OpenCode-plugin-f97316" alt="OpenCode">
+<a href="https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml"><img src="https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license"></a>
+</p>
 
-![version](https://img.shields.io/badge/version-0.8.0-blue)
-![Codex](https://img.shields.io/badge/Codex-plugin-black)
-![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-d97757)
-![Cursor](https://img.shields.io/badge/Cursor-hooks-6e56cf)
-![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-extension-1a73e8)
-![OpenCode](https://img.shields.io/badge/OpenCode-plugin-f97316)
-[![tests](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml/badge.svg)](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml)
-[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+<p align="center">English | <a href="README.zh-CN.md">简体中文</a></p>
 
-## What it does
+<p align="center">
+<a href="#quick-start">Quick start</a> ·
+<a href="#how-it-works">How it works</a> ·
+<a href="#session-controls">Session controls</a> ·
+<a href="#data-and-privacy">Data and privacy</a> ·
+<a href="#troubleshooting">Troubleshooting</a> ·
+<a href="#documentation">Documentation</a>
+</p>
 
-| Capability | Details |
-|------|------|
-| On by default | The first `SessionStart` binds the current project and enables syncing. No endpoint, token or consent click to fill in. |
-| Per-session pause | Send `tracekin off` as the first message of a session to pause that session only. Other sessions and the global setting are untouched. |
-| Local queue and receipts | Events go into a local SQLite queue first; a local companion delivers them and a dashboard shows pending, acknowledged and paused sessions. |
-| Read-only status | The `tracekin_status` MCP tool is a pure read: no table creation, migration or pruning, and it still answers on a read-only database. |
-| One data set across five harnesses | `~/.tracekin` holds one consent record, one queue and one companion per machine. |
+<p align="center"><img src="docs/dashboard.png" width="860" alt="The Tracekin dashboard in demo mode: session controls, delivery counts and event receipts"></p>
 
-## Install
+## Why Tracekin
 
-| Harness | Command |
-|------|------|
-| Codex | `codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git` then `codex plugin add tracekin@tracekin-remote-test`; restart Codex and trust the bundled hooks on the Hooks page |
-| Claude Code | `claude plugin marketplace add 0xblackbox/tracekin-remote-test` then `claude plugin install tracekin@tracekin-remote-test` |
-| Cursor | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` then `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor`; restart Cursor |
-| Gemini CLI | `gemini extensions install https://github.com/0xblackbox/tracekin-remote-test`; restart the CLI. Alternatively `python3 plugins/tracekin/scripts/tracekin.py install-gemini` from a checkout writes `~/.gemini/settings.json` |
-| OpenCode | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` then `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode`; restart OpenCode |
+- **On by default.** The first `SessionStart` binds the current project and enables syncing. There is no endpoint, token or consent button.
+- **Pause one session, not everything.** `tracekin off` as the first message pauses that session only; `tracekin on` resumes it; `tracekin status` reports it. The commands themselves are never uploaded.
+- **Pseudonymous by construction.** Session, turn and project ids are HMAC-SHA256 with a per-device salt. Raw ids, paths, the model name and the transcript file never leave the machine.
+- **One data set per machine.** All five harnesses share `~/.tracekin`: one consent record, one queue, one companion, one dashboard.
+- **Read-only status.** The `tracekin_status` MCP tool never creates, migrates or prunes anything and still answers on a read-only database.
 
-Upgrades: Codex uses `codex plugin marketplace upgrade tracekin-remote-test` followed by remove / add; Claude Code uses `claude plugin update tracekin@tracekin-remote-test`; Cursor and OpenCode use `git pull` in the checkout; Gemini CLI uses `gemini extensions update tracekin`. After installing, start a new session **from the project directory** so `SessionStart` can bind it.
+## Supported harnesses
+
+| Harness | Packaging | Live-verified |
+|------|------|------|
+| Codex | Plugin marketplace (`.codex-plugin`) | Yes |
+| Claude Code | Plugin marketplace (`.claude-plugin`) | Yes |
+| Cursor | User-level hooks via `install-cursor`, or `.cursor-plugin` in `~/.cursor/plugins/local` | Built from the spec; not exercised in a live Cursor yet |
+| Gemini CLI | Extension (the repository root) or `install-gemini` | Built from the docs and source; not exercised live yet |
+| OpenCode | Bundled JS plugin via `install-opencode` | Plugin file exercised with Node; not in a live OpenCode yet |
+
+## Quick start
+
+Pick your harness, install, then start a **new session from the project directory** so `SessionStart` can bind it.
+
+<details>
+<summary><strong>Codex</strong></summary>
+
+```bash
+codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git
+codex plugin add tracekin@tracekin-remote-test
+```
+
+Restart Codex and trust the bundled hooks on the Hooks page. Upgrade with `codex plugin marketplace upgrade tracekin-remote-test`, then remove and add the plugin again.
+</details>
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+```bash
+claude plugin marketplace add 0xblackbox/tracekin-remote-test
+claude plugin install tracekin@tracekin-remote-test
+```
+
+Upgrade with `claude plugin update tracekin@tracekin-remote-test`. For a one-off session without installing: `claude --plugin-dir /path/to/checkout/plugins/tracekin`.
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+```bash
+git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor
+```
+
+Restart Cursor. Upgrade with `git pull` in the checkout; remove with `uninstall-cursor`.
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong></summary>
+
+```bash
+gemini extensions install https://github.com/0xblackbox/tracekin-remote-test
+```
+
+Restart the CLI. Upgrade with `gemini extensions update tracekin`. Alternatively, from a checkout, `python3 plugins/tracekin/scripts/tracekin.py install-gemini` writes `~/.gemini/settings.json`.
+</details>
+
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+```bash
+git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode
+```
+
+Restart OpenCode. Upgrade with `git pull` in the checkout; remove with `uninstall-opencode`.
+</details>
+
+Then open the dashboard. Its address is random on every start:
+
+```bash
+python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/runtime.json")))["url"])'
+```
 
 ## How it works
 
@@ -81,7 +155,8 @@ Never uploaded: the transcript file (`transcript_path` is only a path and is nev
 
 Today's receiver only validates and acknowledges; it does not persist events. "Acknowledged by the receiver" means delivered, not reviewed, and is not a promise of training data or rewards.
 
-## Status fields at a glance
+<details>
+<summary><strong>Status fields at a glance</strong></summary>
 
 `tracekin status` and the MCP `tracekin_status` tool return the same structure:
 
@@ -93,14 +168,9 @@ Today's receiver only validates and acknowledges; it does not persist events. "A
 | `migration_pending` | The database is still in a pre-upgrade state; the next `SessionStart` migrates it |
 | `counts` / `session_controls.paused_sessions` | Pending, acknowledged and paused-session counts |
 | `missing_tables` / `initialized` | Legacy schema diagnostics |
+</details>
 
-The dashboard address is random on every start; read it from the data directory:
-
-```bash
-python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/runtime.json")))["url"])'
-```
-
-## Troubleshooting at a glance
+## Troubleshooting
 
 | Symptom | What to do |
 |------|------|
@@ -111,15 +181,17 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 | `tracekin off` was uploaded | 0.4.5 and earlier required an exact match; upgrade |
 | Dashboard does not open | `runtime.json` is stale; a new session restarts the companion |
 
-Deeper diagnostics and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`) are described in [plugins/tracekin/README.md](plugins/tracekin/README.md).
+Deeper diagnostics, `~/.tracekin/companion.log` and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`) are described in the [technical reference](plugins/tracekin/README.md#troubleshooting).
 
-## Repository layout
+<details>
+<summary><strong>Repository layout</strong></summary>
 
 ```text
 .
 ├── .agents/plugins/marketplace.json   Codex marketplace
 ├── .claude-plugin/marketplace.json    Claude Code marketplace
 ├── gemini-extension.json  hooks/     Gemini CLI extension manifest and hooks (the repo root is the extension)
+├── docs/dashboard.png                 the screenshot above
 ├── plugins/tracekin/
 │   ├── .codex-plugin/  .claude-plugin/  .cursor-plugin/   plugin manifests
 │   ├── hooks/hooks.json     hooks shared by Codex and Claude Code
@@ -128,18 +200,15 @@ Deeper diagnostics and the keys-only hook trace (`touch ~/.tracekin/debug-hooks`
 │   ├── scripts/tracekin.py  serve.py  mcp_server.py      core · companion · MCP
 │   ├── scripts/test_tracekin.py  integration_smoke.py   tests
 │   ├── assets/              local dashboard
-│   └── skills/tracekin/     skill instructions
+│   └── skills/tracekin/     skill instructions (SKILL.md, loaded by the agent; SKILL.zh-CN.md for readers)
 ├── CHANGELOG.md
 └── REMOTE-TEST.md           cross-machine acceptance walkthrough (every doc has a .zh-CN.md twin)
 ```
+</details>
 
 ## Development and tests
 
 Standard library only, nothing to install:
-
-```bash
-python3 -m py_compile plugins/tracekin/scripts/tracekin.py plugins/tracekin/scripts/mcp_server.py plugins/tracekin/scripts/test_tracekin.py
-```
 
 ```bash
 python3 plugins/tracekin/scripts/test_tracekin.py
@@ -149,9 +218,7 @@ python3 plugins/tracekin/scripts/test_tracekin.py
 python3 plugins/tracekin/scripts/integration_smoke.py
 ```
 
-The OpenCode plugin tests drive the real `opencode/tracekin.js` with Node (or Bun) and are skipped when neither is on the PATH.
-
-Local demo with a loopback receiver and nothing leaving the machine:
+The OpenCode plugin tests drive the real `opencode/tracekin.js` with Node (or Bun) and are skipped when neither is on the PATH. A local demo with a loopback receiver and nothing leaving the machine:
 
 ```bash
 python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --project "$PWD"
@@ -161,10 +228,13 @@ Before publishing, validate the manifests with `claude plugin validate --strict 
 
 ## Documentation
 
-- [plugins/tracekin/README.md](plugins/tracekin/README.md): technical reference (runtime details, default policy, delivery, per-harness differences, troubleshooting); [中文版](plugins/tracekin/README.zh-CN.md)
-- [CHANGELOG.md](CHANGELOG.md): release history; [中文版](CHANGELOG.zh-CN.md)
-- [REMOTE-TEST.md](REMOTE-TEST.md): cross-machine acceptance walkthrough; [中文版](REMOTE-TEST.zh-CN.md)
-- [README.zh-CN.md](README.zh-CN.md): this page in Chinese
+| Document | English | 中文 |
+|------|------|------|
+| Technical reference: runtime details, default policy, delivery, per-harness differences, troubleshooting | [plugins/tracekin/README.md](plugins/tracekin/README.md) | [README.zh-CN.md](plugins/tracekin/README.zh-CN.md) |
+| Release history | [CHANGELOG.md](CHANGELOG.md) | [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md) |
+| Cross-machine acceptance walkthrough | [REMOTE-TEST.md](REMOTE-TEST.md) | [REMOTE-TEST.zh-CN.md](REMOTE-TEST.zh-CN.md) |
+| Skill instructions loaded by the agent | [SKILL.md](plugins/tracekin/skills/tracekin/SKILL.md) | [SKILL.zh-CN.md](plugins/tracekin/skills/tracekin/SKILL.zh-CN.md) |
+| This page | README.md | [README.zh-CN.md](README.zh-CN.md) |
 
 ## License
 

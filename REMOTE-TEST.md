@@ -6,7 +6,7 @@ Install the same plugin on another machine and verify three things: the hooks fi
 
 ## 1. Install
 
-Check that `python3 --version` works, then install for your harness (commands in the [README](README.md#install)). Codex needs a restart of Codex Desktop, a check in Plugins Directory that the plugin is enabled, and a review-and-trust pass over the bundled hooks on the Hooks page; Claude Code trusts marketplace plugins on install; Cursor needs a restart after `install-cursor`; Gemini CLI needs a restart after `gemini extensions install <repo url>`; OpenCode needs a restart after `install-opencode`.
+Check that `python3 --version` works, then install for your harness (commands in the [README](README.md#quick-start)). Codex needs a restart of Codex Desktop, a check in Plugins Directory that the plugin is enabled, and a review-and-trust pass over the bundled hooks on the Hooks page; Claude Code trusts marketplace plugins on install; Cursor needs a restart after `install-cursor`; Gemini CLI needs a restart after `gemini extensions install <repo url>`; OpenCode needs a restart after `install-opencode`.
 
 Upgrade first if an older version is installed: Codex uses `marketplace upgrade` → `remove` → `add`, Claude Code uses `claude plugin update`, Cursor and OpenCode use `git pull` in the checkout, Gemini CLI uses `gemini extensions update tracekin`. The version should read `0.8.0+build.<timestamp>`.
 

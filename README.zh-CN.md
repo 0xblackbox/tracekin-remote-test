@@ -1,39 +1,113 @@
-# Tracekin
+<h1 align="center">Tracekin</h1>
 
-[English](README.md) | 简体中文
+<p align="center"><strong>Local-first activity companion for coding agents.</strong><br>
+装进 Codex、Claude Code、Cursor、Gemini CLI 或 OpenCode，当前项目的活动事件就默认同步到 Tracekin Cloud。敏感会话一句 <code>tracekin off</code> 即可暂停。永远不读会话记录文件。</p>
 
-**Local-first activity companion for coding agents.** 在 Codex、Claude Code、Cursor、Gemini CLI、OpenCode 里以插件形式运行：安装即默认同步当前项目的活动事件到 Tracekin Cloud，敏感会话一句 `tracekin off` 即可暂停，永远不读会话记录文件。
+<p align="center">
+<img src="https://img.shields.io/badge/version-0.8.0-blue" alt="version">
+<img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
+<img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
+<img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">
+<img src="https://img.shields.io/badge/Gemini_CLI-extension-1a73e8" alt="Gemini CLI">
+<img src="https://img.shields.io/badge/OpenCode-plugin-f97316" alt="OpenCode">
+<a href="https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml"><img src="https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="license"></a>
+</p>
 
-![version](https://img.shields.io/badge/version-0.8.0-blue)
-![Codex](https://img.shields.io/badge/Codex-plugin-black)
-![Claude Code](https://img.shields.io/badge/Claude_Code-plugin-d97757)
-![Cursor](https://img.shields.io/badge/Cursor-hooks-6e56cf)
-![Gemini CLI](https://img.shields.io/badge/Gemini_CLI-extension-1a73e8)
-![OpenCode](https://img.shields.io/badge/OpenCode-plugin-f97316)
-[![tests](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml/badge.svg)](https://github.com/0xblackbox/tracekin-remote-test/actions/workflows/tests.yml)
-[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+<p align="center"><a href="README.md">English</a> | 简体中文</p>
 
-## 它做什么
+<p align="center">
+<a href="#快速开始">快速开始</a> ·
+<a href="#工作原理">工作原理</a> ·
+<a href="#会话控制">会话控制</a> ·
+<a href="#数据与隐私">数据与隐私</a> ·
+<a href="#排错">排错</a> ·
+<a href="#文档">文档</a>
+</p>
 
-| 能力 | 说明 |
-|------|------|
-| 安装即开启 | 首次 `SessionStart` 自动绑定当前项目并启用同步，不需要填地址、令牌或点授权 |
-| 单会话暂停 | 把 `tracekin off` 作为会话第一条消息，只暂停这一个会话；其他会话和全局设置不受影响 |
-| 本地队列与回执 | 事件先进本机 SQLite 队列，由本地 companion 投递，面板显示待发送 / 已确认 / 已暂停会话 |
-| 只读状态 | MCP 工具 `tracekin_status` 纯读，不建表、不迁移、不 prune，数据库只读时也能返回 |
-| 五种 harness 共用一份数据 | `~/.tracekin` 一台机器一份授权、一个队列、一个面板 |
+<p align="center"><img src="docs/dashboard.png" width="860" alt="演示模式下的 Tracekin 面板：会话控制、投递计数与事件回执"></p>
 
-## 安装
+## 为什么用 Tracekin
 
-| Harness | 命令 |
-|------|------|
-| Codex | `codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git` 然后 `codex plugin add tracekin@tracekin-remote-test`，重启 Codex 并在 Hooks 页面信任 bundled hooks |
-| Claude Code | `claude plugin marketplace add 0xblackbox/tracekin-remote-test` 然后 `claude plugin install tracekin@tracekin-remote-test` |
-| Cursor | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` 然后 `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor`，重启 Cursor |
-| Gemini CLI | `gemini extensions install https://github.com/0xblackbox/tracekin-remote-test`，重启 CLI；或在 checkout 里 `python3 plugins/tracekin/scripts/tracekin.py install-gemini` 写入 `~/.gemini/settings.json` |
-| OpenCode | `git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test` 然后 `python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode`，重启 OpenCode |
+- **安装即开启。** 首次 `SessionStart` 自动绑定当前项目并启用同步，没有地址、令牌或授权按钮。
+- **只暂停一个会话，不是全部。** 把 `tracekin off` 作为第一条消息只暂停这个会话；`tracekin on` 恢复；`tracekin status` 查询。三条指令本身永远不上传。
+- **结构上就是假名化的。** 会话、轮次、项目 ID 都是每台设备独立 salt 的 HMAC-SHA256。原始 ID、路径、模型名和会话记录文件都不出本机。
+- **一台机器一份数据。** 五种 harness 共用 `~/.tracekin`：一份授权、一个队列、一个 companion、一个面板。
+- **状态只读。** MCP 工具 `tracekin_status` 不建表、不迁移、不 prune，数据库只读时也能返回。
 
-升级：Codex 用 `codex plugin marketplace upgrade tracekin-remote-test` 后 remove / add；Claude Code 用 `claude plugin update tracekin@tracekin-remote-test`；Cursor 与 OpenCode 在 checkout 里 `git pull`；Gemini CLI 用 `gemini extensions update tracekin`。安装后从**项目目录**新建一个会话，让 `SessionStart` 完成绑定。
+## 支持的 harness
+
+| Harness | 打包方式 | 实机验证 |
+|------|------|------|
+| Codex | 插件市场（`.codex-plugin`） | 已验证 |
+| Claude Code | 插件市场（`.claude-plugin`） | 已验证 |
+| Cursor | `install-cursor` 写用户级 hooks，或 `.cursor-plugin` 放进 `~/.cursor/plugins/local` | 按规范实现，尚未在 Cursor 实机验证 |
+| Gemini CLI | 扩展（仓库根目录）或 `install-gemini` | 按文档与源码实现，尚未实机验证 |
+| OpenCode | `install-opencode` 注册内置 JS 插件 | 插件文件已用 Node 验证，尚未在 OpenCode 实机验证 |
+
+## 快速开始
+
+选一个 harness 安装，然后**从项目目录新建一个会话**，让 `SessionStart` 完成绑定。
+
+<details>
+<summary><strong>Codex</strong></summary>
+
+```bash
+codex plugin marketplace add https://github.com/0xblackbox/tracekin-remote-test.git
+codex plugin add tracekin@tracekin-remote-test
+```
+
+重启 Codex，在 Hooks 页面信任 bundled hooks。升级用 `codex plugin marketplace upgrade tracekin-remote-test`，再 remove / add 一次。
+</details>
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+```bash
+claude plugin marketplace add 0xblackbox/tracekin-remote-test
+claude plugin install tracekin@tracekin-remote-test
+```
+
+升级用 `claude plugin update tracekin@tracekin-remote-test`。不安装、只用一次会话：`claude --plugin-dir /path/to/checkout/plugins/tracekin`。
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+```bash
+git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-cursor
+```
+
+重启 Cursor。升级在 checkout 里 `git pull`；卸载用 `uninstall-cursor`。
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong></summary>
+
+```bash
+gemini extensions install https://github.com/0xblackbox/tracekin-remote-test
+```
+
+重启 CLI。升级用 `gemini extensions update tracekin`。也可以在 checkout 里 `python3 plugins/tracekin/scripts/tracekin.py install-gemini` 写入 `~/.gemini/settings.json`。
+</details>
+
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+```bash
+git clone https://github.com/0xblackbox/tracekin-remote-test.git ~/tracekin-remote-test
+python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-opencode
+```
+
+重启 OpenCode。升级在 checkout 里 `git pull`；卸载用 `uninstall-opencode`。
+</details>
+
+然后打开面板。地址每次启动随机：
+
+```bash
+python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/runtime.json")))["url"])'
+```
 
 ## 工作原理
 
@@ -81,7 +155,8 @@ flowchart LR
 
 现阶段的接收服务只做校验和回执，不持久化事件；"接收服务已确认"仅代表送达，不代表质量验收，也不构成训练数据或奖励的承诺。
 
-## 状态字段速查
+<details>
+<summary><strong>状态字段速查</strong></summary>
 
 `tracekin status` 与 MCP `tracekin_status` 返回同一份结构：
 
@@ -93,14 +168,9 @@ flowchart LR
 | `migration_pending` | 数据库仍是旧版本状态，下一次 SessionStart 迁移 |
 | `counts` / `session_controls.paused_sessions` | 待发送、已确认、已暂停会话数 |
 | `missing_tables` / `initialized` | 旧版 schema 诊断 |
+</details>
 
-面板地址每次启动随机，在数据目录读取：
-
-```bash
-python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/runtime.json")))["url"])'
-```
-
-## 排错速查
+## 排错
 
 | 现象 | 处理 |
 |------|------|
@@ -111,15 +181,17 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 | `tracekin off` 被上传 | 0.4.5 及更早要求逐字匹配，升级 |
 | 面板打不开 | `runtime.json` 过期，新建会话即可重新拉起 companion |
 
-更细的排查与 hook 字段日志（`touch ~/.tracekin/debug-hooks`）见 [plugins/tracekin/README.zh-CN.md](plugins/tracekin/README.zh-CN.md)。
+更细的排查、`~/.tracekin/companion.log` 与 hook 字段日志（`touch ~/.tracekin/debug-hooks`）见[技术参考](plugins/tracekin/README.zh-CN.md#排错)。
 
-## 仓库结构
+<details>
+<summary><strong>仓库结构</strong></summary>
 
 ```text
 .
 ├── .agents/plugins/marketplace.json   Codex marketplace
 ├── .claude-plugin/marketplace.json    Claude Code marketplace
 ├── gemini-extension.json  hooks/     Gemini CLI 扩展清单与 hooks（扩展根即仓库根）
+├── docs/dashboard.png                 上面那张截图
 ├── plugins/tracekin/
 │   ├── .codex-plugin/  .claude-plugin/  .cursor-plugin/   三份插件清单
 │   ├── hooks/hooks.json     Codex 与 Claude Code 共用的 hooks
@@ -128,18 +200,15 @@ python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.tracekin/
 │   ├── scripts/tracekin.py  serve.py  mcp_server.py      核心 · companion · MCP
 │   ├── scripts/test_tracekin.py  integration_smoke.py   测试
 │   ├── assets/              本地面板
-│   └── skills/tracekin/     技能说明
+│   └── skills/tracekin/     技能说明（SKILL.md 由 agent 加载；SKILL.zh-CN.md 供人阅读）
 ├── CHANGELOG.md
 └── REMOTE-TEST.md           跨电脑验收流程（每份文档都有 .zh-CN.md 中文版）
 ```
+</details>
 
 ## 开发与测试
 
 标准库即可，无需安装依赖：
-
-```bash
-python3 -m py_compile plugins/tracekin/scripts/tracekin.py plugins/tracekin/scripts/mcp_server.py plugins/tracekin/scripts/test_tracekin.py
-```
 
 ```bash
 python3 plugins/tracekin/scripts/test_tracekin.py
@@ -149,21 +218,23 @@ python3 plugins/tracekin/scripts/test_tracekin.py
 python3 plugins/tracekin/scripts/integration_smoke.py
 ```
 
-OpenCode 插件的测试用 Node（或 Bun）驱动真实的 `opencode/tracekin.js`，机器上没有 Node 时会自动跳过。
-
-本地演示（本机接收器，零外发）：
+OpenCode 插件的测试用 Node（或 Bun）驱动真实的 `opencode/tracekin.js`，机器上没有 Node 时会自动跳过。本地演示（本机接收器，零外发）：
 
 ```bash
 python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --project "$PWD"
 ```
 
-发布前用 `claude plugin validate --strict plugins/tracekin` 和 `claude plugin validate .` 校验清单。版本号写在 `scripts/tracekin.py` 的 `PLUGIN_VERSION` 与三份 `plugin.json`、`marketplace.json` 中，测试会检查一致性；格式 `X.Y.Z+build.<时间戳>`，时间戳用于让插件缓存识别新版本。
+发布前用 `claude plugin validate --strict plugins/tracekin` 和 `claude plugin validate .` 校验清单。版本号写在 `scripts/tracekin.py` 的 `PLUGIN_VERSION` 与三份 `plugin.json`、`marketplace.json`、`gemini-extension.json` 中，测试会检查一致性；格式 `X.Y.Z+build.<时间戳>`，时间戳用于让插件缓存识别新版本。
 
 ## 文档
 
-- [plugins/tracekin/README.zh-CN.md](plugins/tracekin/README.zh-CN.md)：技术参考（运行细节、默认策略、投递、各 harness 差异、排错）；[English](plugins/tracekin/README.md)
-- [REMOTE-TEST.zh-CN.md](REMOTE-TEST.zh-CN.md)：跨电脑完整验收流程；[English](REMOTE-TEST.md)
-- [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)：版本记录；[English](CHANGELOG.md)
+| 文档 | 中文 | English |
+|------|------|------|
+| 技术参考：运行细节、默认策略、投递、各 harness 差异、排错 | [README.zh-CN.md](plugins/tracekin/README.zh-CN.md) | [plugins/tracekin/README.md](plugins/tracekin/README.md) |
+| 版本记录 | [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md) | [CHANGELOG.md](CHANGELOG.md) |
+| 跨电脑完整验收流程 | [REMOTE-TEST.zh-CN.md](REMOTE-TEST.zh-CN.md) | [REMOTE-TEST.md](REMOTE-TEST.md) |
+| agent 加载的技能说明 | [SKILL.zh-CN.md](plugins/tracekin/skills/tracekin/SKILL.zh-CN.md)（供人阅读） | [SKILL.md](plugins/tracekin/skills/tracekin/SKILL.md) |
+| 本页 | README.zh-CN.md | [README.md](README.md) |
 
 ## License
 
