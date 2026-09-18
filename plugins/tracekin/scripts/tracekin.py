@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
 """Tracekin local companion. Standard-library only; install enables sync.
 
-Works as a Codex plugin and as a Claude Code plugin: both harnesses run the
-same hook script, which normalizes their slightly different hook payloads
-into one event shape before recording.
+This is the single entry point every harness runs (``hook``, ``start``,
+``status``, ``install-*``). It owns the SQLite store, the sharing policy
+and the companion process; the parts that vary per harness live in
+``tracekin_lib``:
+
+- ``tracekin_lib.common``: version, contract constants, data directories
+- ``tracekin_lib.adapters``: Codex / Claude Code / Cursor / Gemini CLI / OpenCode dialects
+- ``tracekin_lib.delivery``: the HTTPS sender
+- ``tracekin_lib.installers``: Cursor / Gemini CLI / OpenCode installers
+
+The public names below are re-exported so ``serve.py``, ``mcp_server.py``
+and the tests keep importing from ``tracekin``.
 """
 from __future__ import annotations
 
@@ -13,7 +22,6 @@ import hmac
 import json
 import os
 from pathlib import Path
-import re
 import secrets
 import shutil
 import signal
@@ -23,50 +31,23 @@ import sys
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 
-MAX_INPUT = 262144
+from tracekin_lib.common import (  # noqa: F401 - re-exported
+    DEFAULT_POLICY, MAX_INPUT, PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, SCHEMA,
+    InputError, default_home_dir, home_dir, legacy_home_dirs,
+)
+from tracekin_lib.adapters import (  # noqa: F401 - re-exported
+    HARNESSES, HOOK_EVENTS, detect_harness, hook_response, normalize_hook_event, session_command,
+    session_start_project, tool_category,
+)
+from tracekin_lib.delivery import PERMANENT_REJECTIONS, describe_http_error, send_https  # noqa: F401 - re-exported
+from tracekin_lib.installers import (  # noqa: F401 - re-exported
+    install_cursor, install_gemini, install_opencode, uninstall_cursor, uninstall_gemini, uninstall_opencode,
+)
+
 MAX_EVENTS = 1000
 EVENT_TTL = 7 * 86400
 SESSION_OVERRIDE_TTL = 30 * 86400
-SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
-# The receiver refused this specific event; retrying it would block the queue.
-PERMANENT_REJECTIONS = {400, 413, 415, 422}
-SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.8.2+build.20260918053206"
-HARNESSES = ("codex", "claude-code", "cursor", "gemini", "opencode")
-HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
-# Cursor and Gemini CLI name their lifecycle events differently; map them onto the shared shape.
-CURSOR_EVENTS = {"sessionStart": "SessionStart", "beforeSubmitPrompt": "UserPromptSubmit", "postToolUse": "PostToolUse", "stop": "Stop"}
-GEMINI_EVENTS = {"SessionStart": "SessionStart", "BeforeAgent": "UserPromptSubmit", "AfterTool": "PostToolUse", "AfterAgent": "Stop"}
-# Coarse tool categories; never the tool name, command, or arguments.
-TOOL_CATEGORIES = {
-    "Bash": "shell", "bash": "shell", "exec_command": "shell", "shell": "shell", "Shell": "shell", "run_terminal_cmd": "shell", "run_shell_command": "shell",
-    "apply_patch": "edit", "Write": "edit", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "edit_file": "edit", "search_replace": "edit", "write": "edit", "write_file": "edit", "replace": "edit", "edit": "edit", "multiedit": "edit", "patch": "edit",
-    "Read": "read", "Glob": "read", "Grep": "read", "LS": "read", "read_file": "read", "list_dir": "read", "grep": "read", "codebase_search": "read", "glob_file_search": "read", "glob": "read", "search_file_content": "read", "list_directory": "read", "read_many_files": "read", "read": "read", "list": "read",
-    "WebFetch": "web", "WebSearch": "web", "web_search": "web", "fetch": "web", "web_fetch": "web", "google_web_search": "web", "webfetch": "web", "websearch": "web",
-    "Task": "agent", "Agent": "agent", "task": "agent",
-}
-# Ordered: "web" must win over "search" (WebSearch), "shell" over "read" (read_shell_output).
-TOOL_CATEGORY_HINTS = (("web", "web"), ("fetch", "web"), ("shell", "shell"), ("terminal", "shell"), ("bash", "shell"), ("edit", "edit"), ("write", "edit"), ("patch", "edit"), ("replace", "edit"), ("read", "read"), ("grep", "read"), ("search", "read"), ("glob", "read"), ("list", "read"), ("agent", "agent"), ("task", "agent"))
-
-
-def tool_category(name):
-    """Coarse category for any harness's tool name; the name itself never leaves the machine."""
-    if not isinstance(name, str) or not name:
-        return "other"
-    if name in TOOL_CATEGORIES:
-        return TOOL_CATEGORIES[name]
-    if name.startswith("mcp__") or name.startswith("mcp_"):
-        return "other"
-    lowered = name.lower()
-    for hint, category in TOOL_CATEGORY_HINTS:
-        if hint in lowered:
-            return category
-    return "other"
-PLATFORM_PROFILE = "tracekin_cloud_v1"
-PLATFORM_ENDPOINT = "https://tracekin-ingest-guhpxpyula-as.a.run.app/ingest"
-DEFAULT_POLICY = "enabled_on_install; SessionStart binds the current project; `tracekin off` pauses only the current session; only tracekin_deny disables globally"
 TABLES = ("config", "events", "session_overrides")
 SCHEMA_DDL = (
     "CREATE TABLE IF NOT EXISTS config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)",
@@ -80,85 +61,12 @@ SCHEMA_DDL = (
 # Auxiliary tables added after 0.4.x. The hook write path creates them on demand
 # so an upgraded database is protected before its next SessionStart.
 AUX_DDL = SCHEMA_DDL[3:]
-SESSION_COMMANDS = {
-    "tracekin off": "off",
-    "/tracekin off": "off",
-    "tracekin 关闭本会话": "off",
-    "tracekin on": "on",
-    "/tracekin on": "on",
-    "tracekin 开启本会话": "on",
-    "tracekin status": "status",
-    "/tracekin status": "status",
-    "tracekin 状态": "status",
-}
-COMMAND_DECORATION = re.compile(r"[`*_~\"'“”‘’「」（）()\[\]<>]")
-COMMAND_TRAILING_PUNCTUATION = re.compile(r"[\s.。!！?？,，;；:：]+$")
-
-
-def normalize_command_text(text):
-    """Reduce a typed control line to the bare command: drop markdown/quote
-    decorations, trailing punctuation, letter case and extra whitespace."""
-    text = COMMAND_DECORATION.sub("", text)
-    text = COMMAND_TRAILING_PUNCTUATION.sub("", text.strip())
-    return " ".join(text.lower().split())
-
-
-def session_command(prompt):
-    """Recognize `tracekin off|on|status` even when the client wrapped it in
-    backticks or quotes, added punctuation, or put a task after the first line.
-
-    The privacy-safe direction wins: a prompt that starts with the command line
-    is treated as the command, so nothing from that turn is uploaded.
-    """
-    if not isinstance(prompt, str):
-        return None
-    whole = normalize_command_text(prompt)
-    if whole in SESSION_COMMANDS:
-        return SESSION_COMMANDS[whole]
-    lines = [line for line in prompt.strip().splitlines() if line.strip()]
-    if lines:
-        return SESSION_COMMANDS.get(normalize_command_text(lines[0]))
-    return None
-
-
 STATE_HINTS = {
     "awaiting_session_start": "本地数据尚未初始化。从项目目录新建一个 Codex 会话，SessionStart 会自动初始化并绑定当前项目。",
     "denied": "全局共享已被 tracekin_deny 显式撤销。调用 tracekin_allow 可重新启用；`tracekin off` 只影响单个会话。",
     "binding_project": "默认共享已开启，但尚未绑定当前项目。新建 Codex 会话时 SessionStart 会自动绑定。",
     "enabled": "当前项目默认共享已开启。敏感任务前把 `tracekin off` 作为该会话第一条消息即可暂停本会话。",
 }
-
-
-def default_home_dir():
-    """Harness-neutral data directory shared by every surface on this machine."""
-    return (Path.home() / ".tracekin").resolve()
-
-
-def home_dir():
-    """Shared local data directory for hooks, the panel, and the MCP server.
-
-    One directory per machine, whichever harness (Codex, Claude Code) is
-    running: one consent record, one queue, one companion. Harness-provided
-    variables such as ``PLUGIN_DATA`` / ``CLAUDE_PLUGIN_DATA`` are injected
-    into hook commands only, never into a plugin's MCP server, so they must
-    not select the directory. ``TRACEKIN_HOME`` remains an explicit override.
-    """
-    override = os.environ.get("TRACEKIN_HOME")
-    if override:
-        return Path(override).expanduser().resolve()
-    return default_home_dir()
-
-
-def legacy_home_dirs():
-    """Data directories used by versions <= 0.4.x, oldest last."""
-    codex_home = os.environ.get("CODEX_HOME")
-    base = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
-    candidates = [(base / "tracekin").resolve()]
-    for variable in ("PLUGIN_DATA", "CLAUDE_PLUGIN_DATA"):
-        value = os.environ.get(variable)
-        if value:
-            candidates.append((Path(value).expanduser() / "tracekin").resolve())
-    return list(dict.fromkeys(candidates))
 
 
 def legacy_database(home):
@@ -192,10 +100,6 @@ def migrate_legacy_home(home):
     (home / "tracekin.sqlite3").chmod(0o600)
     source.rename(source.with_name("tracekin.sqlite3.migrated"))
     return source
-
-
-class InputError(ValueError):
-    pass
 
 
 def valid_endpoint(value, demo_endpoint=None):
@@ -762,114 +666,6 @@ class Store:
         return self.snapshot()
 
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def describe_http_error(error):
-    """Short, log-safe description such as ``HTTP 401 unauthorized``."""
-    detail = ""
-    try:
-        body = json.loads(error.read(512))
-        if isinstance(body, dict) and isinstance(body.get("error"), str):
-            detail = " " + body["error"][:64]
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
-    return f"HTTP {error.code}{detail}"
-
-
-def send_https(endpoint, payload, endpoint_token=""):
-    body = json.dumps({"schema": SCHEMA, "events": [payload]}).encode()
-    headers = {"Content-Type": "application/json", "Idempotency-Key": payload["id"]}
-    if endpoint_token:
-        headers["Authorization"] = "Bearer " + endpoint_token
-    request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(request, timeout=SEND_TIMEOUT) as response:
-        result = json.loads(response.read(65537))
-        return isinstance(result, dict) and isinstance(result.get("accepted"), list) and payload["id"] in result["accepted"]
-
-
-def detect_harness(event):
-    """Tell Codex, Claude Code, Cursor and Gemini CLI hook payloads apart."""
-    name = event.get("hook_event_name")
-    if name in CURSOR_EVENTS or "conversation_id" in event or "generation_id" in event:
-        return "cursor"
-    if name in ("BeforeAgent", "AfterAgent", "AfterTool", "BeforeTool") or "prompt_response" in event:
-        return "gemini"
-    if event.get("harness") == "opencode" or "worktree" in event:
-        return "opencode"
-    if "prompt_id" in event or "tool_output" in event or "tool_output_is_error" in event:
-        return "claude-code"
-    return "codex"
-
-
-def normalize_hook_event(event, harness="auto"):
-    """Map a harness-specific hook payload onto the Codex-shaped event that
-    ``Store.record`` understands. Returns ``(harness, event)``.
-
-    Claude Code: the per-turn identifier is ``prompt_id`` (not ``turn_id``),
-    PostToolUse may carry ``tool_output`` (not ``tool_response``), and Stop
-    may carry no assistant message. Cursor: events are named
-    ``beforeSubmitPrompt`` / ``postToolUse`` / ``stop``, the identifiers are
-    ``conversation_id`` / ``generation_id``, the project comes from
-    ``workspace_roots``, and Stop never carries the assistant message. The
-    transcript file is never read to fill any gap.
-    """
-    if harness == "auto":
-        harness = detect_harness(event)
-    if harness == "codex":
-        return harness, event
-    if harness == "opencode":
-        # The bundled OpenCode plugin (opencode/tracekin.js) already emits the
-        # shared shape; it carries no turn id, so Store.record counts turns.
-        normalized = dict(event)
-        normalized.pop("turn_id", None)
-        return harness, normalized
-    if harness == "gemini":
-        # Gemini CLI: BeforeAgent / AfterTool / AfterAgent, no turn or call ids,
-        # tool_response is an object, AfterAgent carries prompt_response.
-        normalized = dict(event)
-        name = event.get("hook_event_name")
-        normalized["hook_event_name"] = GEMINI_EVENTS.get(name, name)
-        normalized.pop("turn_id", None)  # assigned per session by Store.record
-        if normalized["hook_event_name"] == "PostToolUse" and not normalized.get("tool_use_id"):
-            normalized["tool_use_id"] = f"{event.get('timestamp') or int(time.time() * 1000)}:{event.get('tool_name', '')}"[:4096]
-        if normalized["hook_event_name"] == "Stop":
-            if "last_assistant_message" not in normalized and isinstance(event.get("prompt_response"), str):
-                normalized["last_assistant_message"] = event["prompt_response"]
-            normalized.pop("prompt", None)  # already captured by the BeforeAgent event
-        return harness, normalized
-    if harness == "cursor":
-        normalized = dict(event)
-        normalized["hook_event_name"] = CURSOR_EVENTS.get(event.get("hook_event_name"), event.get("hook_event_name"))
-        if not normalized.get("session_id") or normalized["hook_event_name"] != "SessionStart":
-            normalized["session_id"] = event.get("conversation_id") or event.get("session_id")
-        normalized["turn_id"] = event.get("generation_id") or event.get("turn_id") or ("t-" + str(event.get("tool_use_id") or int(time.time() * 1000)))
-        if not normalized.get("cwd"):
-            roots = event.get("workspace_roots")
-            normalized["cwd"] = roots[0] if isinstance(roots, list) and roots and isinstance(roots[0], str) else (os.environ.get("CURSOR_PROJECT_DIR") or os.environ.get("CLAUDE_PROJECT_DIR") or "")
-        if "tool_response" not in normalized and "tool_output" in normalized:
-            normalized["tool_response"] = normalized["tool_output"]
-        if not normalized.get("tool_use_id") and normalized["hook_event_name"] == "PostToolUse":
-            normalized["tool_use_id"] = "call-" + str(int(time.time() * 1000))
-        return harness, normalized
-    if harness != "claude-code":
-        raise InputError("未知的 harness")
-    normalized = dict(event)
-    if not normalized.get("turn_id"):
-        turn = normalized.get("prompt_id")
-        if isinstance(turn, str) and turn:
-            normalized["turn_id"] = turn
-        else:
-            # Older builds without prompt_id: Store.record assigns a per-session turn.
-            normalized.pop("turn_id", None)
-    if "tool_response" not in normalized and "tool_output" in normalized:
-        normalized["tool_response"] = normalized["tool_output"]
-    return harness, normalized
-
-
 def hook_debug(home, event, result, harness):
     """Append a keys-only trace line when ``<data_dir>/debug-hooks`` exists.
 
@@ -915,18 +711,6 @@ def run_hook(home, harness="auto"):
         raise
     hook_debug(home, event, result, detected)
     return event
-
-
-def hook_response(harness, event):
-    """The stdout a harness expects from an observing hook.
-
-    Cursor's ``beforeSubmitPrompt`` must answer ``{"continue": true}`` or the
-    prompt is blocked; every other hook, on every harness, accepts ``{}``.
-    """
-    name = event.get("hook_event_name") if isinstance(event, dict) else None
-    if harness == "cursor" and name in ("beforeSubmitPrompt", "UserPromptSubmit"):
-        return {"continue": True}
-    return {}
 
 
 def bind_session_project(home, project=None):
@@ -1017,248 +801,16 @@ def start_companion(home, project=None):
     return "started"
 
 
-def session_start_project():
-    """The project a SessionStart hook should bind.
-
-    Codex and Claude Code send ``cwd``; Cursor sends ``workspace_roots`` and
-    runs user-level hooks from ``~/.cursor``, so the harness-provided project
-    variables are preferred over the process working directory.
-    """
-    fallback = os.environ.get("CURSOR_PROJECT_DIR") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    if sys.stdin.isatty():
-        return fallback
-    raw = sys.stdin.buffer.read(MAX_INPUT + 1)
-    if len(raw) > MAX_INPUT:
-        return fallback
-    try:
-        value = json.loads(raw) if raw else {}
-        if not isinstance(value, dict):
-            return fallback
-        cwd = value.get("cwd")
-        if isinstance(cwd, str) and cwd:
-            return cwd
-        roots = value.get("workspace_roots")
-        if isinstance(roots, list) and roots and isinstance(roots[0], str) and roots[0]:
-            return roots[0]
-        return fallback
-    except (ValueError, TypeError):
-        return fallback
-
-
-CURSOR_HOOKS = {"sessionStart": ("start", 5), "beforeSubmitPrompt": ("hook", 3), "postToolUse": ("hook", 3), "stop": ("hook", 3)}
-
-
-def cursor_paths(cursor_home):
-    cursor_home = Path(cursor_home).expanduser().resolve()
-    return cursor_home, cursor_home / "hooks.json", cursor_home / "mcp.json", cursor_home / "tracekin"
-
-
-def load_json_object(path):
-    """Existing config to merge into; a present-but-unparseable file is never overwritten."""
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        raise InputError(f"无法解析 {path}，为避免覆盖你的配置已中止：{error}") from error
-    return data if isinstance(data, dict) else {}
-
-
-GEMINI_HOOKS = {"SessionStart": ("start", 5000), "BeforeAgent": ("hook", 3000), "AfterTool": ("hook", 3000), "AfterAgent": ("hook", 3000)}
-
-
-def write_wrappers(wrapper_dir, harness):
-    """Argument-free wrapper scripts so a harness only needs a path to run."""
-    script = Path(__file__).resolve()
-    wrapper_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    wrappers = {}
-    for action in ("start", "hook"):
-        wrapper = wrapper_dir / f"{action}.sh"
-        wrapper.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" {action} --harness {harness}\n', encoding="utf-8")
-        wrapper.chmod(0o755)
-        wrappers[action] = str(wrapper)
-    return wrappers
-
-
-def install_gemini(gemini_home):
-    """Register Tracekin in Gemini CLI's user settings.
-
-    Gemini CLI reads ``hooks`` and ``mcpServers`` from ``~/.gemini/settings.json``
-    (hook timeouts in milliseconds). Entries pointing into
-    ``<gemini_home>/tracekin/`` are ours and are replaced on re-install;
-    everything else in the file is kept. The extension in this repository
-    (``gemini-extension.json`` + ``hooks/hooks.json``) is the alternative.
-    """
-    gemini_home = Path(gemini_home).expanduser().resolve()
-    settings_path = gemini_home / "settings.json"
-    wrapper_dir = gemini_home / "tracekin"
-    settings = load_json_object(settings_path)
-    wrappers = write_wrappers(wrapper_dir, "gemini")
-    table = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
-    for event, (action, timeout) in GEMINI_HOOKS.items():
-        groups = []
-        for group in table.get(event) or []:
-            if not isinstance(group, dict):
-                continue
-            kept = [h for h in (group.get("hooks") or []) if not (isinstance(h, dict) and str(h.get("command", "")).startswith(str(wrapper_dir)))]
-            if kept:
-                groups.append(dict(group, hooks=kept))
-        groups.append({"hooks": [{"type": "command", "command": wrappers[action], "timeout": timeout, "name": "tracekin"}]})
-        table[event] = groups
-    settings["hooks"] = table
-    servers = settings.get("mcpServers") if isinstance(settings.get("mcpServers"), dict) else {}
-    servers["tracekin"] = {"command": sys.executable, "args": [str(Path(__file__).resolve().with_name("mcp_server.py"))]}
-    settings["mcpServers"] = servers
-    write_json(settings_path, settings)
-    return {"tracekin": "installed", "harness": "gemini", "settings": str(settings_path), "wrappers": wrappers, "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
-
-
-def install_opencode(opencode_home):
-    """Register Tracekin with OpenCode.
-
-    OpenCode auto-loads JS plugins from ``~/.config/opencode/plugins/`` and
-    reads MCP servers from ``~/.config/opencode/opencode.json``. Write a
-    one-line loader that re-exports the bundled plugin from this checkout
-    (so ``git pull`` upgrades it) and merge the MCP server into the config,
-    keeping everything else. A config that cannot be parsed as JSON (for
-    example JSONC with comments) is left untouched and reported.
-    """
-    opencode_home = Path(opencode_home).expanduser().resolve()
-    plugin_source = Path(__file__).resolve().parent.parent / "opencode" / "tracekin.js"
-    loader = opencode_home / "plugins" / "tracekin.js"
-    config_path = opencode_home / "opencode.json"
-    config = load_json_object(config_path)
-    loader.parent.mkdir(parents=True, exist_ok=True)
-    loader.write_text(f'// Tracekin loader written by tracekin.py install-opencode; re-exports the checkout so git pull upgrades it.\nexport {{ TracekinPlugin }} from {json.dumps(str(plugin_source))};\n', encoding="utf-8")
-    servers = config.get("mcp") if isinstance(config.get("mcp"), dict) else {}
-    servers["tracekin"] = {"type": "local", "command": [sys.executable, str(Path(__file__).resolve().with_name("mcp_server.py"))], "enabled": True}
-    config["mcp"] = servers
-    config.setdefault("$schema", "https://opencode.ai/config.json")
-    write_json(config_path, config)
-    return {"tracekin": "installed", "harness": "opencode", "plugin": str(loader), "config": str(config_path), "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
-
-
-def uninstall_opencode(opencode_home):
-    """Remove only Tracekin's loader and MCP server from OpenCode's user config."""
-    opencode_home = Path(opencode_home).expanduser().resolve()
-    loader = opencode_home / "plugins" / "tracekin.js"
-    config_path = opencode_home / "opencode.json"
-    removed = 0
-    if loader.exists():
-        loader.unlink()
-        removed += 1
-    config = load_json_object(config_path)
-    servers = config.get("mcp") if isinstance(config.get("mcp"), dict) else {}
-    if servers.pop("tracekin", None) is not None:
-        removed += 1
-        config["mcp"] = servers
-        write_json(config_path, config)
-    return {"tracekin": "uninstalled", "harness": "opencode", "removed": removed}
-
-
-def uninstall_gemini(gemini_home):
-    """Remove only Tracekin's hook groups, MCP server and wrappers from Gemini CLI settings."""
-    gemini_home = Path(gemini_home).expanduser().resolve()
-    settings_path = gemini_home / "settings.json"
-    wrapper_dir = gemini_home / "tracekin"
-    removed = 0
-    settings = load_json_object(settings_path)
-    table = settings.get("hooks") if isinstance(settings.get("hooks"), dict) else {}
-    for event in list(table):
-        groups = []
-        for group in table.get(event) or []:
-            hooks = group.get("hooks") if isinstance(group, dict) else None
-            kept = [h for h in (hooks or []) if not (isinstance(h, dict) and str(h.get("command", "")).startswith(str(wrapper_dir)))]
-            removed += len(hooks or []) - len(kept)
-            if kept:
-                groups.append(dict(group, hooks=kept))
-        if groups:
-            table[event] = groups
-        else:
-            table.pop(event, None)
-    servers = settings.get("mcpServers") if isinstance(settings.get("mcpServers"), dict) else {}
-    if servers.pop("tracekin", None) is not None:
-        removed += 1
-    if settings_path.exists():
-        settings["hooks"] = table
-        settings["mcpServers"] = servers
-        write_json(settings_path, settings)
-    for wrapper in ("start.sh", "hook.sh"):
-        (wrapper_dir / wrapper).unlink(missing_ok=True)
-    try:
-        wrapper_dir.rmdir()
-    except OSError:
-        pass
-    return {"tracekin": "uninstalled", "harness": "gemini", "removed": removed}
-
-
-def write_json(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def install_cursor(cursor_home):
-    """Register Tracekin with Cursor, which has no plugin manifest.
-
-    Writes two argument-free wrapper scripts under ``<cursor_home>/tracekin/``
-    and merges entries into ``hooks.json`` and ``mcp.json``, keeping every
-    hook and server that is not ours. Re-running replaces our entries.
-    """
-    cursor_home, hooks_path, mcp_path, wrapper_dir = cursor_paths(cursor_home)
-    script = Path(__file__).resolve()
-    hooks = load_json_object(hooks_path)
-    mcp_existing = load_json_object(mcp_path)
-    wrappers = write_wrappers(wrapper_dir, "cursor")
-    hooks.setdefault("version", 1)
-    table = hooks.get("hooks") if isinstance(hooks.get("hooks"), dict) else {}
-    for event, (action, timeout) in CURSOR_HOOKS.items():
-        entries = [e for e in (table.get(event) or []) if not (isinstance(e, dict) and str(e.get("command", "")).startswith(str(wrapper_dir)))]
-        entries.append({"command": wrappers[action], "timeout": timeout})
-        table[event] = entries
-    hooks["hooks"] = table
-    write_json(hooks_path, hooks)
-    mcp = mcp_existing
-    servers = mcp.get("mcpServers") if isinstance(mcp.get("mcpServers"), dict) else {}
-    servers["tracekin"] = {"type": "stdio", "command": sys.executable, "args": [str(script.with_name("mcp_server.py"))]}
-    mcp["mcpServers"] = servers
-    write_json(mcp_path, mcp)
-    return {"tracekin": "installed", "harness": "cursor", "hooks": str(hooks_path), "mcp": str(mcp_path), "wrappers": wrappers, "data_dir": str(home_dir()), "version": PLUGIN_VERSION}
-
-
-def uninstall_cursor(cursor_home):
-    """Remove only Tracekin's hook entries, MCP server and wrappers."""
-    cursor_home, hooks_path, mcp_path, wrapper_dir = cursor_paths(cursor_home)
-    removed = 0
-    hooks = load_json_object(hooks_path)
-    table = hooks.get("hooks") if isinstance(hooks.get("hooks"), dict) else {}
-    for event in list(table):
-        kept = [e for e in (table.get(event) or []) if not (isinstance(e, dict) and str(e.get("command", "")).startswith(str(wrapper_dir)))]
-        removed += len(table.get(event) or []) - len(kept)
-        if kept:
-            table[event] = kept
-        else:
-            table.pop(event, None)
-    if hooks_path.exists():
-        hooks["hooks"] = table
-        write_json(hooks_path, hooks)
-    mcp = load_json_object(mcp_path)
-    servers = mcp.get("mcpServers") if isinstance(mcp.get("mcpServers"), dict) else {}
-    if servers.pop("tracekin", None) is not None:
-        removed += 1
-        mcp["mcpServers"] = servers
-        write_json(mcp_path, mcp)
-    for wrapper in ("start.sh", "hook.sh"):
-        (wrapper_dir / wrapper).unlink(missing_ok=True)
-    try:
-        wrapper_dir.rmdir()
-    except OSError:
-        pass
-    return {"tracekin": "uninstalled", "harness": "cursor", "removed": removed}
+INSTALLERS = {
+    "install-cursor": ("cursor_home", install_cursor), "uninstall-cursor": ("cursor_home", uninstall_cursor),
+    "install-gemini": ("gemini_home", install_gemini), "uninstall-gemini": ("gemini_home", uninstall_gemini),
+    "install-opencode": ("opencode_home", install_opencode), "uninstall-opencode": ("opencode_home", uninstall_opencode),
+}
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["hook", "status", "start", "install-cursor", "uninstall-cursor", "install-gemini", "uninstall-gemini", "install-opencode", "uninstall-opencode"])
+    parser.add_argument("action", choices=["hook", "status", "start", *INSTALLERS])
     parser.add_argument("--home", type=Path, default=home_dir())
     parser.add_argument("--harness", choices=("auto",) + HARNESSES, default="auto", help="hook payload dialect; auto-detected from the payload by default")
     parser.add_argument("--cursor-home", type=Path, default=Path("~/.cursor"), help="Cursor user config directory for install-cursor / uninstall-cursor")
@@ -1284,18 +836,9 @@ def main():
         except (OSError, ValueError, TypeError, sqlite3.Error):
             pass  # A companion must not block the user's task.
         print(json.dumps(hook_response(args.harness, event)))
-    elif args.action == "install-cursor":
-        print(json.dumps(install_cursor(args.cursor_home), ensure_ascii=False))
-    elif args.action == "uninstall-cursor":
-        print(json.dumps(uninstall_cursor(args.cursor_home), ensure_ascii=False))
-    elif args.action == "install-gemini":
-        print(json.dumps(install_gemini(args.gemini_home), ensure_ascii=False))
-    elif args.action == "uninstall-gemini":
-        print(json.dumps(uninstall_gemini(args.gemini_home), ensure_ascii=False))
-    elif args.action == "install-opencode":
-        print(json.dumps(install_opencode(args.opencode_home), ensure_ascii=False))
-    elif args.action == "uninstall-opencode":
-        print(json.dumps(uninstall_opencode(args.opencode_home), ensure_ascii=False))
+    elif args.action in INSTALLERS:
+        option, installer = INSTALLERS[args.action]
+        print(json.dumps(installer(getattr(args, option)), ensure_ascii=False))
     else:
         # Pure read: no directory, schema, migration, or prune writes.
         print(json.dumps(Store(args.home, create=False).snapshot(), ensure_ascii=False))

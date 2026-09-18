@@ -4,7 +4,7 @@
 装进 Codex、Claude Code、Cursor、Gemini CLI 或 OpenCode，当前项目的活动事件就默认同步到 Tracekin Cloud。敏感会话一句 <code>tracekin off</code> 即可暂停。永远不读会话记录文件。</p>
 
 <p align="center">
-<img src="https://img.shields.io/badge/version-0.8.2-blue" alt="version">
+<img src="https://img.shields.io/badge/version-0.8.3-blue" alt="version">
 <img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
 <img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
 <img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">
@@ -197,7 +197,10 @@ flowchart LR
 │   ├── hooks/hooks.json     Codex 与 Claude Code 共用的 hooks
 │   ├── codex/mcp.json  .mcp.json  cursor/  gemini/       各 harness 的 MCP 配置与包装脚本
 │   ├── opencode/tracekin.js  OpenCode 插件（把事件总线翻译成同样的 hook 调用）
-│   ├── scripts/tracekin.py  serve.py  mcp_server.py      核心 · companion · MCP
+│   ├── scripts/tracekin.py  入口：存储、共享策略、hook / start / status、CLI
+│   ├── scripts/tracekin_lib/  common.py  adapters.py  delivery.py  installers.py
+│   │                        版本与数据目录 · harness 方言 · HTTPS 发送 · Cursor / Gemini / OpenCode 安装器
+│   ├── scripts/serve.py  mcp_server.py                  companion · MCP
 │   ├── scripts/test_tracekin.py  integration_smoke.py   测试
 │   ├── assets/              本地面板
 │   └── skills/tracekin/     技能说明（SKILL.md 由 agent 加载；SKILL.zh-CN.md 供人阅读）
@@ -224,7 +227,7 @@ OpenCode 插件的测试用 Node（或 Bun）驱动真实的 `opencode/tracekin.
 python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --project "$PWD"
 ```
 
-发布前用 `claude plugin validate --strict plugins/tracekin` 和 `claude plugin validate .` 校验清单。版本号写在 `scripts/tracekin.py` 的 `PLUGIN_VERSION` 与三份 `plugin.json`、`marketplace.json`、`gemini-extension.json` 中，测试会检查一致性；格式 `X.Y.Z+build.<时间戳>`，时间戳用于让插件缓存识别新版本。
+发布前用 `claude plugin validate --strict plugins/tracekin` 和 `claude plugin validate .` 校验清单。版本号写在 `scripts/tracekin_lib/common.py` 的 `PLUGIN_VERSION` 与三份 `plugin.json`、`marketplace.json`、`gemini-extension.json` 中，测试会检查一致性；格式 `X.Y.Z+build.<时间戳>`，时间戳用于让插件缓存识别新版本。
 
 ## 文档
 

@@ -1,6 +1,6 @@
 {
   "name": "tracekin",
-  "version": "0.8.2+build.20260918053206",
+  "version": "0.8.3+build.20260918081205",
   "description": "Local-first activity companion: binds the project on SessionStart, syncs to Tracekin Cloud by default, and honors `tracekin off` / `tracekin on` / `tracekin status` for the current session only.",
   "mcpServers": {
     "tracekin": {

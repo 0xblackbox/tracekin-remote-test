@@ -106,7 +106,7 @@ python3 ~/tracekin-remote-test/plugins/tracekin/scripts/tracekin.py install-open
 
 ### SessionStart 绑定
 
-`tracekin.py start` 读取 stdin 里的 `cwd`（Codex、Claude Code）或 `workspace_roots[0]`（Cursor），退回 `CURSOR_PROJECT_DIR` / `CLAUDE_PROJECT_DIR` / 进程目录。目录会被追加进 `projects` 并设为 `active_project`；根目录和用户主目录会被拒绝，但 companion 仍会以已记录的项目继续运行。SessionStart 的输出在 Codex / Claude Code 下是诊断 JSON（`tracekin`、`project`、`data_dir`、`error`），在 Cursor 下是 `{}`。
+`tracekin.py start` 读取 stdin 里的 `cwd`（Codex、Claude Code）或 `workspace_roots[0]`（Cursor），退回 `CURSOR_PROJECT_DIR` / `CLAUDE_PROJECT_DIR` / 进程目录。目录会被追加进 `projects` 并设为 `active_project`；根目录和用户主目录会被拒绝，但 companion 仍会以已记录的项目继续运行。SessionStart 的输出在 Codex / Claude Code 下是诊断 JSON（`tracekin`、`project`、`data_dir`、`error`），在 Cursor 和 Gemini CLI 下是 `{}`。
 
 ### 数据目录
 
@@ -202,10 +202,12 @@ hook 字段日志：`touch ~/.tracekin/debug-hooks` 后，每次 hook 调用往 
 
 ## 开发
 
+代码结构：`scripts/tracekin.py` 是唯一入口（`hook` / `start` / `status` / `install-*`），保留 SQLite 存储、共享策略和 companion 进程管理；`scripts/tracekin_lib/` 放随 harness 变化的部分：`common.py`（版本、契约常量、数据目录）、`adapters.py`（五种 harness 方言、工具分类、控制指令）、`delivery.py`（HTTPS 发送）、`installers.py`（Cursor / Gemini CLI / OpenCode 安装器）。库模块从不反向导入入口脚本；`serve.py`、`mcp_server.py` 和测试都从 `tracekin` 导入公开名字。
+
 - 单元测试：`python3 scripts/test_tracekin.py`（标准库，无依赖；会真实拉起并回收 companion 进程）
 - 集成冒烟：`python3 scripts/integration_smoke.py`（demo 模式，本机接收器）
-- 语法：`python3 -m py_compile scripts/*.py`
+- 语法：`python3 -m py_compile scripts/*.py scripts/tracekin_lib/*.py`
 - 清单：`claude plugin validate --strict .`（在插件目录）与仓库根 `claude plugin validate .`
-- 版本：改 `PLUGIN_VERSION` 与 `.codex-plugin` / `.claude-plugin` / `.cursor-plugin` 三份 `plugin.json`、根 `.claude-plugin/marketplace.json` 和根 `gemini-extension.json`，测试会校验一致
+- 版本：改 `scripts/tracekin_lib/common.py` 的 `PLUGIN_VERSION` 与 `.codex-plugin` / `.claude-plugin` / `.cursor-plugin` 三份 `plugin.json`、根 `.claude-plugin/marketplace.json` 和根 `gemini-extension.json`，测试会校验一致
 
 本插件只证明"活动与授权的传输链路"，不声称活动元数据是训练语料、任务质量或任何奖励。

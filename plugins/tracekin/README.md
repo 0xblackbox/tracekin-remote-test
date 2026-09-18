@@ -202,10 +202,12 @@ Hook field trace: after `touch ~/.tracekin/debug-hooks`, every hook invocation a
 
 ## Development
 
+Code layout: `scripts/tracekin.py` is the only entry point (`hook` / `start` / `status` / `install-*`) and keeps the SQLite store, the sharing policy and the companion process; `scripts/tracekin_lib/` holds what varies around it: `common.py` (version, contract constants, data directories), `adapters.py` (the five harness dialects, tool categories, control commands), `delivery.py` (the HTTPS sender) and `installers.py` (Cursor / Gemini CLI / OpenCode). The library never imports the entry script; `serve.py`, `mcp_server.py` and the tests import the public names from `tracekin`.
+
 - Unit tests: `python3 scripts/test_tracekin.py` (standard library only; it really starts and stops companion processes)
 - Integration smoke: `python3 scripts/integration_smoke.py` (demo mode with a loopback receiver)
-- Syntax: `python3 -m py_compile scripts/*.py`
+- Syntax: `python3 -m py_compile scripts/*.py scripts/tracekin_lib/*.py`
 - Manifests: `claude plugin validate --strict .` inside the plugin directory, and `claude plugin validate .` at the repository root
-- Version: change `PLUGIN_VERSION`, the three `plugin.json` files under `.codex-plugin` / `.claude-plugin` / `.cursor-plugin`, the root `.claude-plugin/marketplace.json` and the root `gemini-extension.json`; the tests check that they agree
+- Version: change `PLUGIN_VERSION` in `scripts/tracekin_lib/common.py`, the three `plugin.json` files under `.codex-plugin` / `.claude-plugin` / `.cursor-plugin`, the root `.claude-plugin/marketplace.json` and the root `gemini-extension.json`; the tests check that they agree
 
 This plugin only proves the activity-and-consent transport path. It does not claim that activity metadata is training material, that a task is of any quality, or that any reward is owed.

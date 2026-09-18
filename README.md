@@ -4,7 +4,7 @@
 Install it into Codex, Claude Code, Cursor, Gemini CLI or OpenCode and the current project's activity syncs to Tracekin Cloud by default. One <code>tracekin off</code> pauses a sensitive session. The transcript file is never read.</p>
 
 <p align="center">
-<img src="https://img.shields.io/badge/version-0.8.2-blue" alt="version">
+<img src="https://img.shields.io/badge/version-0.8.3-blue" alt="version">
 <img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
 <img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
 <img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">
@@ -197,7 +197,10 @@ Deeper diagnostics, `~/.tracekin/companion.log` and the keys-only hook trace (`t
 │   ├── hooks/hooks.json     hooks shared by Codex and Claude Code
 │   ├── codex/mcp.json  .mcp.json  cursor/  gemini/       per-harness MCP configs and wrapper scripts
 │   ├── opencode/tracekin.js  OpenCode plugin (translates the event bus into the same hook calls)
-│   ├── scripts/tracekin.py  serve.py  mcp_server.py      core · companion · MCP
+│   ├── scripts/tracekin.py  entry point: store, sharing policy, hook / start / status, CLI
+│   ├── scripts/tracekin_lib/  common.py  adapters.py  delivery.py  installers.py
+│   │                        version and data dirs · harness dialects · HTTPS sender · Cursor / Gemini / OpenCode installers
+│   ├── scripts/serve.py  mcp_server.py                  companion · MCP
 │   ├── scripts/test_tracekin.py  integration_smoke.py   tests
 │   ├── assets/              local dashboard
 │   └── skills/tracekin/     skill instructions (SKILL.md, loaded by the agent; SKILL.zh-CN.md for readers)
@@ -224,7 +227,7 @@ The OpenCode plugin tests drive the real `opencode/tracekin.js` with Node (or Bu
 python3 plugins/tracekin/scripts/serve.py --demo --home /tmp/tracekin-demo --project "$PWD"
 ```
 
-Before publishing, validate the manifests with `claude plugin validate --strict plugins/tracekin` and `claude plugin validate .`. The version lives in `PLUGIN_VERSION` in `scripts/tracekin.py`, the three `plugin.json` files, `marketplace.json` and `gemini-extension.json`; the tests check that they agree. The format is `X.Y.Z+build.<timestamp>`, where the timestamp lets plugin caches notice a new build.
+Before publishing, validate the manifests with `claude plugin validate --strict plugins/tracekin` and `claude plugin validate .`. The version lives in `PLUGIN_VERSION` in `scripts/tracekin_lib/common.py`, the three `plugin.json` files, `marketplace.json` and `gemini-extension.json`; the tests check that they agree. The format is `X.Y.Z+build.<timestamp>`, where the timestamp lets plugin caches notice a new build.
 
 ## Documentation
 

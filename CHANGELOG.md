@@ -4,6 +4,12 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 
 Versions are `X.Y.Z+build.<timestamp>` (`+codex.<timestamp>` for 0.4.x). The timestamp only exists so plugin caches notice a new build.
 
+## 0.8.3 · 2026-09-18
+
+- Code split, no behavior change: `scripts/tracekin.py` (1306 lines) now keeps only the entry point, the SQLite store, the sharing policy and the companion process (848 lines). The parts that vary per harness moved into `scripts/tracekin_lib/`: `common.py` (version, contract constants, data directories), `adapters.py` (the Codex / Claude Code / Cursor / Gemini CLI / OpenCode dialects, tool categories, control commands, hook stdout), `delivery.py` (the HTTPS sender) and `installers.py` (Cursor / Gemini CLI / OpenCode).
+- Every entry point is unchanged (`tracekin.py hook | start | status | install-*`, the wrappers, the OpenCode plugin), and `serve.py`, `mcp_server.py` and the tests keep importing the public names from `tracekin`. The library never imports the entry script back; a new test checks that and that the facade exports what the other scripts need.
+- The version constant now lives in `scripts/tracekin_lib/common.py`; the version-sync test checks that file too.
+
 ## 0.8.2 · 2026-09-18
 
 - Privacy fix for OpenCode: subagents run in child sessions with their own `sessionID`, so `tracekin off` in the session the user was typing in did not cover their tool calls. The plugin now tracks each session's parent (from `session.created` / `session.updated`, with one SDK lookup for sessions first seen mid-life) and reports subagent tool calls under the root session and its current turn.

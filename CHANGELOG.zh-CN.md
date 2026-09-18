@@ -4,6 +4,12 @@
 
 版本格式 `X.Y.Z+build.<时间戳>`（0.4.x 为 `+codex.<时间戳>`），时间戳只用于让插件缓存识别新版本。
 
+## 0.8.3 · 2026-09-18
+
+- 代码拆分，行为不变：`scripts/tracekin.py`（1306 行）现在只保留入口、SQLite 存储、共享策略和 companion 进程管理（848 行）。随 harness 变化的部分移入 `scripts/tracekin_lib/`：`common.py`（版本、契约常量、数据目录）、`adapters.py`（Codex / Claude Code / Cursor / Gemini CLI / OpenCode 方言、工具分类、控制指令、hook 输出）、`delivery.py`（HTTPS 发送）、`installers.py`（Cursor / Gemini CLI / OpenCode 安装器）。
+- 所有入口不变（`tracekin.py hook | start | status | install-*`、包装脚本、OpenCode 插件），`serve.py`、`mcp_server.py` 和测试仍从 `tracekin` 导入公开名字。库模块从不反向导入入口脚本，新增测试检查这一点以及 facade 导出的名字齐全。
+- 版本常量改放在 `scripts/tracekin_lib/common.py`，版本一致性测试同时检查该文件。
+
 ## 0.8.2 · 2026-09-18
 
 - OpenCode 隐私修复：子代理运行在有独立 `sessionID` 的子会话里，用户在当前会话发的 `tracekin off` 此前管不到它们的工具调用。插件现在记录每个会话的父会话（来自 `session.created` / `session.updated`，对中途才见到的会话向 SDK 查询一次），并把子代理的工具调用记到根会话及其当前轮次名下。

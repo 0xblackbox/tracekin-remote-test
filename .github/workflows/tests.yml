@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Compile
-        run: python3 -m py_compile plugins/tracekin/scripts/tracekin.py plugins/tracekin/scripts/mcp_server.py plugins/tracekin/scripts/serve.py plugins/tracekin/scripts/test_tracekin.py
+        run: python3 -m py_compile plugins/tracekin/scripts/*.py plugins/tracekin/scripts/tracekin_lib/*.py
       - name: Manifests are valid JSON
         run: |
           for f in plugins/tracekin/.codex-plugin/plugin.json plugins/tracekin/.claude-plugin/plugin.json plugins/tracekin/.cursor-plugin/plugin.json plugins/tracekin/hooks/hooks.json plugins/tracekin/cursor/hooks.json plugins/tracekin/.mcp.json plugins/tracekin/codex/mcp.json plugins/tracekin/cursor/mcp.json .claude-plugin/marketplace.json .agents/plugins/marketplace.json gemini-extension.json hooks/hooks.json plugins/tracekin/opencode/package.json; do

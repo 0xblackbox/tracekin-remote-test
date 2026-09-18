@@ -19,10 +19,11 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.8.2+build.20260918053206"
+EXPECTED_VERSION = "0.8.3+build.20260918081205"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
+LIBRARY = SCRIPTS / "tracekin_lib"
 MCP_SERVER = SCRIPTS / "mcp_server.py"
 FULL_SCHEMA = (
     "CREATE TABLE config (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)",
@@ -218,6 +219,27 @@ def test_version_synced_with_manifests():
             wrapper = repo / hook_entry["command"].replace("${extensionPath}/", "")
             assert wrapper.is_file() and os.access(wrapper, os.X_OK), wrapper
             assert wrapper.name == ("start.sh" if event == "SessionStart" else "hook.sh")
+
+
+def test_library_modules_never_import_the_entry_script():
+    """tracekin.py is the entry point and the facade every other script imports
+    from; tracekin_lib must not import it back, or the split would be cyclic.
+    The version constant lives in the library so every module reads one value."""
+    modules = ("common", "adapters", "delivery", "installers")
+    assert all((LIBRARY / f"{name}.py").is_file() for name in ("__init__",) + modules)
+    assert f'PLUGIN_VERSION = "{EXPECTED_VERSION}"' in (LIBRARY / "common.py").read_text(encoding="utf-8")
+    facade = ("Store", "InputError", "PLUGIN_VERSION", "SCHEMA", "DEFAULT_POLICY", "home_dir", "send_https", "detect_harness", "normalize_hook_event", "session_command", "tool_category", "install_cursor", "install_gemini", "install_opencode")
+    probe = (
+        "import sys\n"
+        + "".join(f"import tracekin_lib.{name}\n" for name in modules)
+        + "loaded = sorted(m for m in sys.modules if m == 'tracekin' or m.startswith('tracekin.'))\n"
+        "assert not loaded, loaded\n"
+        "import tracekin\n"
+        f"print(','.join(name for name in {facade!r} if hasattr(tracekin, name)))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", probe], cwd=SCRIPTS, capture_output=True, text=True, env=base_env(), timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ",".join(facade)
 
 
 def test_cursor_plugin_wrappers_run_from_any_directory(d, root):
