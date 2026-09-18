@@ -91,6 +91,8 @@ OpenCode has no stdin-JSON hook commands; its plugins are ESM modules run by Bun
 | `tool.execute.after` | PostToolUse, `tool` / `callID` / `args` / `output` |
 | `event: session.idle` | Stop, assistant reply from the latest assistant text part of that session |
 
+Subagents run in child sessions with their own `sessionID`. The plugin learns the parent of every session from `session.created` / `session.updated` (and asks the SDK once for a session it first sees mid-life) and reports a subagent's tool calls under the **root** session and its current turn, so `tracekin off` typed in the session you are in also covers everything its subagents do. The task text the model writes for a subagent is not a user prompt and is never uploaded or parsed as a command, and a subagent going idle does not produce a Stop event.
+
 Install:
 
 ```bash

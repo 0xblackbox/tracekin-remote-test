@@ -4,7 +4,7 @@
 装进 Codex、Claude Code、Cursor、Gemini CLI 或 OpenCode，当前项目的活动事件就默认同步到 Tracekin Cloud。敏感会话一句 <code>tracekin off</code> 即可暂停。永远不读会话记录文件。</p>
 
 <p align="center">
-<img src="https://img.shields.io/badge/version-0.8.1-blue" alt="version">
+<img src="https://img.shields.io/badge/version-0.8.2-blue" alt="version">
 <img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
 <img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
 <img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">

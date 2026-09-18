@@ -19,7 +19,7 @@ import urllib.error
 sys.path.insert(0, str(Path(__file__).parent))
 from tracekin import PLATFORM_ENDPOINT, PLATFORM_PROFILE, PLUGIN_VERSION, Store, TABLES, apply_default_policy, bind_session_project, detect_harness, home_dir, normalize_hook_event, session_command, tool_category
 
-EXPECTED_VERSION = "0.8.1+build.20260917184133"
+EXPECTED_VERSION = "0.8.2+build.20260918053206"
 SCRIPTS = Path(__file__).resolve().parent
 PLUGIN_DIR = SCRIPTS.parent
 TRACEKIN = SCRIPTS / "tracekin.py"
@@ -703,7 +703,10 @@ def opencode_driver(d, root, home):
     driver = d / "driver.mjs"
     driver.write_text(
         f"import {{ TracekinPlugin }} from {json.dumps((PLUGIN_DIR / 'opencode' / 'tracekin.js').as_uri())};\n"
-        f"const hooks = await TracekinPlugin({{ directory: {json.dumps(str(root))}, worktree: {json.dumps(str(root))}, project: {{}}, client: {{}}, $: undefined }});\n"
+        "// A stand-in for the OpenCode SDK client: session.get answers from a table and throws otherwise.\n"
+        "const known = JSON.parse(process.argv[3] || '{}');\n"
+        "const client = { session: { get: async ({ path }) => { if (!(path.id in known)) throw new Error('not found'); return { data: known[path.id] }; } } };\n"
+        f"const hooks = await TracekinPlugin({{ directory: {json.dumps(str(root))}, worktree: {json.dumps(str(root))}, project: {{}}, client, $: undefined }});\n"
         "for (const step of JSON.parse(process.argv[2])) {\n"
         "  if (step.kind === 'event') await hooks.event({ event: step.event });\n"
         "  else if (step.kind === 'chat') await hooks['chat.message'](step.input, step.output);\n"
@@ -713,8 +716,8 @@ def opencode_driver(d, root, home):
         encoding="utf-8",
     )
 
-    def drive(steps):
-        result = subprocess.run([NODE, str(driver), json.dumps(steps)], env=dict(base_env(), TRACEKIN_HOME=str(home), TRACEKIN_PYTHON=sys.executable), capture_output=True, text=True, cwd=root, timeout=180)
+    def drive(steps, known=None):
+        result = subprocess.run([NODE, str(driver), json.dumps(steps), json.dumps(known or {})], env=dict(base_env(), TRACEKIN_HOME=str(home), TRACEKIN_PYTHON=sys.executable), capture_output=True, text=True, cwd=root, timeout=180)
         assert result.returncode == 0 and "driver ok" in result.stdout, result.stderr
     return drive
 
@@ -748,14 +751,38 @@ def test_opencode_plugin_bridges_events_to_the_store(d, root):
         raw = store.db.read_bytes()
         assert session.encode() not in raw and b"SYNTHETIC_HIDDEN" not in raw
         assert not (home / "runtime.json").exists(), "a subagent session must not restart the companion"
-        # `tracekin off` typed in OpenCode pauses this session and drops its pending events.
+        # Subagents run in child sessions. Their tool calls belong to the root session and turn; the task
+        # text the model writes for them is not a user prompt, and a child going idle is not a Stop.
+        tool = lambda sid, call, output: {"kind": "tool", "input": {"tool": "grep", "sessionID": sid, "callID": call, "args": {"pattern": "x"}}, "output": {"title": "", "output": output, "metadata": {}}}
+        drive([
+            {"kind": "chat", "input": {"sessionID": "child", "messageID": "cm1"}, "output": {"parts": [{"type": "text", "text": "SUBAGENT_TASK_TEXT"}]}},
+            tool("child", "child-call", "CHILD_OUTPUT"),
+            {"kind": "event", "event": {"type": "session.created", "properties": {"info": {"id": "grandchild", "parentID": "child", "directory": str(root)}}}},
+            tool("grandchild", "grandchild-call", "GRANDCHILD_OUTPUT"),
+            {"kind": "event", "event": {"type": "session.idle", "properties": {"sessionID": "child"}}},
+            # Sessions first seen mid-life are looked up once; an id that cannot be looked up is a root.
+            tool("resumed-child", "resumed-call", "RESUMED_CHILD_OUTPUT"),
+            {"kind": "chat", "input": {"sessionID": "resumed-root", "messageID": "rm1"}, "output": {"parts": [{"type": "text", "text": "RESUMED_ROOT_PROMPT"}]}},
+        ], known={"resumed-child": {"id": "resumed-child", "parentID": session}, "child": {"id": "child", "parentID": session}, "grandchild": {"id": "grandchild", "parentID": "child"}})
+        payloads = [e["payload"] for e in store.snapshot()["events"]]
+        assert store.snapshot()["counts"] == {"pending": 7, "sent": 0}, store.snapshot()["counts"]
+        assert [p["event"] for p in payloads].count("Stop") == 1 and [p["event"] for p in payloads].count("UserPromptSubmit") == 2
+        root_session = events["UserPromptSubmit"]["session_id"]
+        subagent_tools = [p for p in payloads if p["event"] == "PostToolUse" and p["task_data"]["tool_response"] in ("CHILD_OUTPUT", "GRANDCHILD_OUTPUT", "RESUMED_CHILD_OUTPUT")]
+        assert len(subagent_tools) == 3 and all(p["session_id"] == root_session and p["turn_id"] == events["UserPromptSubmit"]["turn_id"] for p in subagent_tools)
+        assert [p for p in payloads if p["event"] == "UserPromptSubmit" and p["session_id"] != root_session][0]["task_data"] == {"prompt": "RESUMED_ROOT_PROMPT"}
+        assert b"SUBAGENT_TASK_TEXT" not in store.db.read_bytes()
+        # `tracekin off` typed in the root session pauses it, drops its pending events, and covers its subagents.
         drive([
             {"kind": "chat", "input": {"sessionID": session, "messageID": "m2"}, "output": {"parts": [{"type": "text", "text": "`tracekin off`"}]}},
             {"kind": "tool", "input": {"tool": "read", "sessionID": session, "callID": "call-2", "args": {"filePath": "/x"}}, "output": {"title": "", "output": "PRIVATE_FILE", "metadata": {}}},
-        ])
+            tool("child", "child-after-off", "CHILD_AFTER_OFF"),
+            tool("grandchild", "grandchild-after-off", "GRANDCHILD_AFTER_OFF"),
+        ], known={"child": {"id": "child", "parentID": session}, "grandchild": {"id": "grandchild", "parentID": "child"}})
         status = store.snapshot()
-        assert status["session_controls"]["paused_sessions"] == 1 and status["counts"] == {"pending": 0, "sent": 0}
-        assert b"PRIVATE_FILE" not in store.db.read_bytes()
+        assert status["session_controls"]["paused_sessions"] == 1 and status["counts"] == {"pending": 1, "sent": 0}, status["counts"]
+        raw = store.db.read_bytes()
+        assert b"PRIVATE_FILE" not in raw and b"CHILD_AFTER_OFF" not in raw and b"GRANDCHILD_AFTER_OFF" not in raw and b"CHILD_OUTPUT" not in raw
     finally:
         stop_companion(home)
 
@@ -813,6 +840,7 @@ def test_tracekin_off_and_on_control_only_current_session(d, root):
     hook(store.home, prompt_event(root, "tracekin off", turn="control-off"))
     status = store.snapshot()
     assert status["counts"] == {"pending": 0, "sent": 0}
+    assert b"PRIVATE_COMMAND" not in store.db.read_bytes(), "dropped events are overwritten in the file, not just unlinked"
     assert status["session_controls"]["paused_sessions"] == 1
     assert store.record(tool_event(root, turn="paused-turn", call="paused-call")) == "session_disabled"
     assert store.record(prompt_event(root, "ordinary private prompt", turn="paused-prompt")) == "session_disabled"

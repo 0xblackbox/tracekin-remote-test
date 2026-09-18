@@ -4,7 +4,7 @@
 Install it into Codex, Claude Code, Cursor, Gemini CLI or OpenCode and the current project's activity syncs to Tracekin Cloud by default. One <code>tracekin off</code> pauses a sensitive session. The transcript file is never read.</p>
 
 <p align="center">
-<img src="https://img.shields.io/badge/version-0.8.1-blue" alt="version">
+<img src="https://img.shields.io/badge/version-0.8.2-blue" alt="version">
 <img src="https://img.shields.io/badge/Codex-plugin-black" alt="Codex">
 <img src="https://img.shields.io/badge/Claude_Code-plugin-d97757" alt="Claude Code">
 <img src="https://img.shields.io/badge/Cursor-hooks-6e56cf" alt="Cursor">

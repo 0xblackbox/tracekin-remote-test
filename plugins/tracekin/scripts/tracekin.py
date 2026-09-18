@@ -33,7 +33,7 @@ SEND_TIMEOUT = 10  # Cloud Run cold starts can exceed a couple of seconds.
 # The receiver refused this specific event; retrying it would block the queue.
 PERMANENT_REJECTIONS = {400, 413, 415, 422}
 SCHEMA = "tracekin.activity.v1"
-PLUGIN_VERSION = "0.8.1+build.20260917184133"
+PLUGIN_VERSION = "0.8.2+build.20260918053206"
 HARNESSES = ("codex", "claude-code", "cursor", "gemini", "opencode")
 HOOK_EVENTS = {"PostToolUse", "Stop", "UserPromptSubmit"}
 # Cursor and Gemini CLI name their lifecycle events differently; map them onto the shared shape.
@@ -305,6 +305,9 @@ class Store:
             c = sqlite3.connect(self.db.as_uri() + "?mode=ro", uri=True, timeout=4)
         else:
             c = sqlite3.connect(self.db, timeout=4)
+            # Dropped events (tracekin off, deny, clear, prune, rejected) must not
+            # linger as plain text in the file's free pages.
+            c.execute("PRAGMA secure_delete=ON")
         c.row_factory = sqlite3.Row
         return c
 

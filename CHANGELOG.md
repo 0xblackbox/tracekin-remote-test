@@ -4,6 +4,12 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 
 Versions are `X.Y.Z+build.<timestamp>` (`+codex.<timestamp>` for 0.4.x). The timestamp only exists so plugin caches notice a new build.
 
+## 0.8.2 · 2026-09-18
+
+- Privacy fix for OpenCode: subagents run in child sessions with their own `sessionID`, so `tracekin off` in the session the user was typing in did not cover their tool calls. The plugin now tracks each session's parent (from `session.created` / `session.updated`, with one SDK lookup for sessions first seen mid-life) and reports subagent tool calls under the root session and its current turn.
+- The task text the model writes for a subagent is no longer uploaded as a user prompt or parsed as a control command, and a subagent going idle no longer produces a Stop event.
+- Events dropped locally (`tracekin off`, `tracekin_deny`, clearing, pruning, receiver rejections) are now overwritten in the database file (`PRAGMA secure_delete`); before, their plain text stayed in the file's free pages on disk. This concerned the local file only; dropped events were never uploaded.
+
 ## 0.8.1 · 2026-09-17
 
 - Privacy fix: the whole turn a control command opens is withheld. Previously `tracekin status` and `tracekin on` kept the prompt back but still uploaded the status tool call and the model's confirmation from the same turn. Such turns are now recorded in a `control_turns` table and later events of the turn return `control_turn`; harnesses without a turn id give the control prompt its own counted turn.

@@ -91,6 +91,8 @@ OpenCode 没有 stdin JSON 的 hook 命令，插件是 Bun 运行的 ESM 模块�
 | `tool.execute.after` | PostToolUse，`tool` / `callID` / `args` / `output` |
 | `event: session.idle` | Stop，助手回复来自该会话最近一条 assistant 消息的文本 part |
 
+子代理运行在有独立 `sessionID` 的子会话里。插件从 `session.created` / `session.updated` 学到每个会话的父会话（对中途才见到的会话会向 SDK 查询一次），并把子代理的工具调用记到**根会话**及其当前轮次名下，所以你在当前会话里发的 `tracekin off` 同样覆盖它的所有子代理。模型写给子代理的任务文本不是用户提示词，既不上传也不会被当成指令解析；子代理进入空闲也不产生 Stop 事件。
+
 安装：
 
 ```bash
